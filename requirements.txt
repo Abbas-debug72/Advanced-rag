@@ -1,0 +1,11 @@
+sentence-transformers>=3.0.0
+pinecone
+langchain
+langchain-community
+langchain-text-splitters
+langchain-huggingface
+langchain-core
+langchain-groq
+pypdf
+python-dotenv
+langchain-experimental
