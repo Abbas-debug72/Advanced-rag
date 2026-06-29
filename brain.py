@@ -47,55 +47,58 @@ class KnowledgeBrain:
     # ------------------------------------------------------------------
     # EMBEDDING METHODS (Pinecone REST API – 384-dim model)
     # ------------------------------------------------------------------
-    def embed_texts(self, texts: List[str]) -> List[List[float]]:
-        """Embed documents using Pinecone's built-in inference (384-dim)."""
-        url = "https://api.pinecone.io/embed"
-        headers = {
-            "Api-Key": self.api_key,
-            "Content-Type": "application/json"
-        }
-        
-        embeddings = []
-        for text in texts:
-            payload = {
-                "model": "multilingual-e5-large",
-                "parameters": {"input_type": "passage"},
-                "inputs": [text]
-            }
-            try:
-                response = requests.post(url, json=payload, headers=headers)
-                response.raise_for_status()
-                data = response.json()
-                embeddings.append(data["data"][0]["values"])
-            except Exception as e:
-                print(f"⚠️  Embedding error: {e}")
-                embeddings.append([0.0] * 384)
-        
-        return embeddings
+# In brain.py, replace the embed methods:
 
-    def embed_query(self, query: str) -> List[float]:
-        """Embed a single query."""
-        url = "https://api.pinecone.io/embed"
-        headers = {
-            "Api-Key": self.api_key,
-            "Content-Type": "application/json"
-        }
-        
+def embed_texts(self, texts: List[str]) -> List[List[float]]:
+    """Embed documents using Pinecone inference."""
+    # Correct endpoint
+    url = f"https://{self.index_host}/embeddings"
+    headers = {
+        "Api-Key": self.api_key,
+        "Content-Type": "application/json"
+    }
+    
+    embeddings = []
+    for text in texts:
         payload = {
             "model": "multilingual-e5-large",
-            "parameters": {"input_type": "query"},
-            "inputs": [query]
+            "parameters": {"input_type": "passage"},
+            "inputs": [text[:8000]]  # Limit text length
         }
-        
         try:
             response = requests.post(url, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
-            return data["data"][0]["values"]
+            embeddings.append(data["data"][0]["values"])
         except Exception as e:
-            print(f"⚠️  Query embedding error: {e}")
-            return [0.0] * 384
+            print(f"⚠️  Embedding error: {e}")
+            # Return zero vector as fallback
+            embeddings.append([0.0] * 384)
+    
+    return embeddings
 
+def embed_query(self, query: str) -> List[float]:
+    """Embed a single query."""
+    url = f"https://{self.index_host}/embeddings"
+    headers = {
+        "Api-Key": self.api_key,
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": "multilingual-e5-large",
+        "parameters": {"input_type": "query"},
+        "inputs": [query[:8000]]
+    }
+    
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        return data["data"][0]["values"]
+    except Exception as e:
+        print(f"⚠️  Query embedding error: {e}")
+        return [0.0] * 384
     # ------------------------------------------------------------------
     # METADATA
     # ------------------------------------------------------------------
