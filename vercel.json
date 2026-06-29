@@ -3,11 +3,5 @@
     { "source": "/widget.js", "destination": "/api/widget" },
     { "source": "/widget-demo", "destination": "/api/widget-demo" },
     { "source": "/(.*)", "destination": "/api/index" }
-  ],
-  "builds": [
-    {
-      "src": "api/index.py",
-      "use": "@vercel/python"
-    }
   ]
 }

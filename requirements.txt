@@ -3,8 +3,4 @@ python-dotenv
 pinecone
 groq
 requests
-langchain
-langchain-core
-langchain-community
-langchain-text-splitters
 pypdf
