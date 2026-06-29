@@ -1,11 +1,10 @@
-sentence-transformers>=3.0.0
-pinecone
+flask
+python-dotenv
 langchain
-langchain-community
-langchain-text-splitters
-langchain-huggingface
 langchain-core
 langchain-groq
+langchain-community
+langchain-text-splitters
 pypdf
-python-dotenv
-langchain-experimental
+pinecone
+optimum[onnxruntime]

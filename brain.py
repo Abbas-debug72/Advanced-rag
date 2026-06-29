@@ -1,60 +1,48 @@
-# brain.py – Pinecone + BGE-small + Cross-encoder + Semantic Chunking
+# brain.py – Vercel-Optimized with ONNX Embeddings (No PyTorch)
 import os
 import re
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 from datetime import datetime
 from collections import Counter
 
 from pinecone import Pinecone
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_experimental.text_splitter import SemanticChunker
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
-from sentence_transformers import CrossEncoder
 
 
 class KnowledgeBrain:
-    """Universal knowledge engine – Pinecone + smart retrieval upgrades."""
+    """Universal knowledge engine – Vercel-optimized with ONNX (lightweight)."""
 
     def __init__(
         self,
         pdf_directory: str = "./pdfs",
-        embedding_model: str = None,           # can be set from env
-        chunk_size: int = None,                 # ignored by SemanticChunker
-        chunk_overlap: int = None,              # ignored by SemanticChunker
+        chunk_size: int = 800,
+        chunk_overlap: int = 150,
     ):
         self.pdf_directory = Path(pdf_directory)
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
 
-        # ── 1. Embedding model (BGE-small by default) ──
-        model_name = embedding_model or os.getenv(
-            "EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"
-        )
-        print(f"📥 Loading embedding model: {model_name}")
+        print("📥 Loading lightweight ONNX embedding model...")
         self.embeddings = HuggingFaceEmbeddings(
-            model_name=model_name,
-            model_kwargs={'trust_remote_code': True}
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_kwargs={'provider': 'CPUExecutionProvider'},
+            encode_kwargs={'normalize_embeddings': True}
         )
 
-        # ── 2. Cross‑encoder (re‑ranker) ──
-        rerank_model = os.getenv(
-            "RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"
-        )
-        print(f"📥 Loading re‑ranker: {rerank_model}")
-        self.reranker = CrossEncoder(rerank_model)
-
-        # ── 3. Pinecone setup (same as before) ──
+        # Pinecone setup
         self.api_key = os.getenv("PINECONE_API_KEY")
         self.index_host = os.getenv("PINECONE_INDEX_HOST")
         self.pc = Pinecone(api_key=self.api_key)
         self.index = self.pc.Index(host=self.index_host)
 
-        # Local metadata storage
+        # Local metadata
         self.metadata_file = "./brain_metadata.json"
         self.documents_metadata = self._load_metadata()
-
-        # Document summaries (for topic scoring, unchanged)
         self.doc_summaries = self._build_document_summaries()
 
         stats = self.get_stats()
@@ -62,7 +50,7 @@ class KnowledgeBrain:
               f"{stats['total_chunks']} chunks\n")
 
     # ------------------------------------------------------------------
-    # METADATA (identical to earlier)
+    # METADATA
     # ------------------------------------------------------------------
     def _load_metadata(self) -> dict:
         if os.path.exists(self.metadata_file):
@@ -75,7 +63,7 @@ class KnowledgeBrain:
             json.dump(self.documents_metadata, f, indent=2, default=str)
 
     # ------------------------------------------------------------------
-    # DOCUMENT SUMMARIES (unchanged)
+    # DOCUMENT SUMMARIES
     # ------------------------------------------------------------------
     def _build_document_summaries(self) -> dict:
         summaries = {}
@@ -108,9 +96,6 @@ class KnowledgeBrain:
             ))
         return docs
 
-    # (entity extraction, key terms, document type detection, category – all unchanged)
-    # I'll keep them identical to your existing code for brevity, but assume they exist.
-    # ------------------------------------------------------------------
     def _extract_entities(self, text: str) -> List[str]:
         entities = []
         patterns = [
@@ -173,7 +158,7 @@ class KnowledgeBrain:
         return "general"
 
     # ------------------------------------------------------------------
-    # INGESTION (now uses SemanticChunker)
+    # INGESTION
     # ------------------------------------------------------------------
     def ingest_all_pdfs(self) -> Dict:
         pdf_files = list(self.pdf_directory.glob("**/*.pdf"))
@@ -184,11 +169,9 @@ class KnowledgeBrain:
         print(f"📚 Found {len(pdf_files)} PDFs\n")
         results = {"total": len(pdf_files), "processed": 0, "skipped": 0, "failed": 0}
 
-        # Semantic chunker – splits at natural topic breaks
-        text_splitter = SemanticChunker(
-            self.embeddings,
-            breakpoint_threshold_type="percentile",
-            breakpoint_threshold_amount=90  # higher = fewer splits
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
         )
 
         for i, pdf_path in enumerate(pdf_files, 1):
@@ -215,7 +198,6 @@ class KnowledgeBrain:
                         "page_number": page_num + 1,
                     })
 
-                # Use semantic chunker
                 chunks = text_splitter.split_documents(pages)
 
                 vectors = []
@@ -229,7 +211,6 @@ class KnowledgeBrain:
                         "metadata": chunk.metadata
                     })
 
-                # Upsert in batches
                 BATCH = 100
                 for j in range(0, len(vectors), BATCH):
                     self.index.upsert(vectors=vectors[j:j+BATCH])
@@ -241,7 +222,7 @@ class KnowledgeBrain:
                     "upload_date": datetime.now().isoformat()
                 }
 
-                print(f"✅ {len(pages)}p → {len(chunks)} semantic chunks [{category}]")
+                print(f"✅ {len(pages)}p → {len(chunks)} chunks [{category}]")
                 results["processed"] += 1
                 if results["processed"] % 10 == 0:
                     self._save_metadata()
@@ -255,10 +236,9 @@ class KnowledgeBrain:
         return results
 
     # ------------------------------------------------------------------
-    # SEARCH (Pinecone + cross-encoder reranking)
+    # SEARCH
     # ------------------------------------------------------------------
     def search(self, query: str, k: int = 4, category: str = None) -> List[Document]:
-        """Raw vector search (no reranking yet)."""
         query_embedding = self.embeddings.embed_query(query)
         filter_dict = None
         if category and category != "all":
@@ -278,33 +258,14 @@ class KnowledgeBrain:
             ))
         return docs
 
-    def _rerank_with_cross_encoder(self, query: str, docs: List[Document], top_k: int) -> List[Document]:
-        """Cross-encoder reranker – gives true relevance scores."""
-        if not docs:
-            return docs
-        pairs = [(query, doc.page_content) for doc in docs]
-        scores = self.reranker.predict(pairs)
-        scored = list(zip(scores, docs))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [doc for _, doc in scored[:top_k]]
-
     def intelligent_search(self, query: str, k: int = 4, category: str = None) -> List[Document]:
-        """
-        Full intelligent pipeline:
-        1. Dense retrieval from Pinecone (top 20)
-        2. Cross-encoder reranking (top 10)
-        3. Custom topic/entity scoring (your existing logic) on the reduced set (top 4)
-        """
-        # 1. Retrieve more candidates
-        raw_docs = self.search(query, k=5, category=category)  # 5*5=25
+        candidates = self.search(query, k=k, category=category)
+        if len(candidates) <= k:
+            return candidates
 
-        # 2. Rerank with cross-encoder to top 10
-        reranked = self._rerank_with_cross_encoder(query, raw_docs, top_k=10)
-
-        # 3. Apply your custom scoring on the remaining candidates
         query_analysis = self._analyze_query(query)
         scored = []
-        for doc in reranked:
+        for doc in candidates:
             filename = doc.metadata.get('source_file', '')
             doc_info = self.doc_summaries.get(filename, {})
             doc_type = doc_info.get('document_type', 'unknown')
@@ -312,12 +273,10 @@ class KnowledgeBrain:
             ts = self._score_topic_match(query_analysis, doc_type, doc_info)
             cs = self._score_content_match(query_analysis, doc.page_content)
             es = self._score_entity_match(query_analysis, doc_info)
-            total = fs + ts + cs + es
-            scored.append((total, doc))
+            scored.append((fs + ts + cs + es, doc))
 
         scored.sort(key=lambda x: x[0], reverse=True)
 
-        # Dynamic threshold (unchanged)
         if scored:
             top_score = scored[0][0]
             MIN_SCORE = max(30, top_score * 0.5)
@@ -352,7 +311,9 @@ class KnowledgeBrain:
         print(f"   ✅ Returning {len(result)} documents")
         return result[:k]
 
-    # Scoring methods (identical to your current code)
+    # ------------------------------------------------------------------
+    # SCORING METHODS
+    # ------------------------------------------------------------------
     def _analyze_query(self, query: str) -> dict:
         query_clean = re.sub(r'[?.,!;:()"\'*]', ' ', query)
         query_clean = re.sub(r'\s+', ' ', query_clean).strip()
@@ -461,7 +422,7 @@ class KnowledgeBrain:
         return score
 
     # ------------------------------------------------------------------
-    # UTILITIES (unchanged)
+    # UTILITIES
     # ------------------------------------------------------------------
     def get_stats(self) -> dict:
         try:
