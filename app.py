@@ -1,220 +1,195 @@
-# app.py – Pinecone RAG Chatbot (with HuggingFace embeddings)
+# app_server.py - Lightweight version for Vercel deployment
 from dotenv import load_dotenv
 load_dotenv()
 
 import os
 import uuid
-import re
-from flask import Flask, request, jsonify, render_template, session
-from brain import KnowledgeBrain
+import json
+from flask import Flask, request, jsonify, session
 from memory import ConversationMemory
-
-from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+from pinecone import Pinecone
+from groq import Groq
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
-print("🧠 Loading Knowledge Brain with free HuggingFace embeddings...")
-brain = KnowledgeBrain(pdf_directory=os.getenv("PDF_DIRECTORY", "./pdfs"))
+print("🚀 Starting lightweight RAG server...")
 
-api_key = os.getenv("GROQ_API_KEY")
-if not api_key:
-    raise RuntimeError("GROQ_API_KEY not set in .env file")
+# Initialize Pinecone
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINECONE_INDEX_HOST = os.getenv("PINECONE_INDEX_HOST")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "knowledge-brain")
 
-llm = ChatGroq(
-    api_key=api_key,
-    model="llama-3.1-8b-instant",
-    temperature=0.1,
-    max_tokens=1024
-)
+if not PINECONE_API_KEY or not PINECONE_INDEX_HOST:
+    raise RuntimeError("Missing Pinecone configuration")
+
+pc = Pinecone(api_key=PINECONE_API_KEY)
+index = pc.Index(host=PINECONE_INDEX_HOST)
+
+# Initialize Groq
+groq_api_key = os.getenv("GROQ_API_KEY")
+if not groq_api_key:
+    raise RuntimeError("GROQ_API_KEY not set")
+
+groq_client = Groq(api_key=groq_api_key)
+GROQ_MODEL = os.getenv("GROQ_CHAT_MODEL", "mixtral-8x7b-32768")
+GROQ_EMBEDDING_MODEL = os.getenv("GROQ_EMBEDDING_MODEL", "text-embedding-3-small")
+
+# Load document metadata (generated during local ingestion)
+def load_document_metadata():
+    metadata_file = "./brain_metadata.json"
+    if os.path.exists(metadata_file):
+        with open(metadata_file, 'r') as f:
+            return json.load(f)
+    return {}
+
+documents_metadata = load_document_metadata()
+print(f"📚 Loaded metadata for {len(documents_metadata)} documents")
+
+def get_all_filenames():
+    return list(documents_metadata.keys())
+
+def get_embedding(text: str):
+    """Get embedding using Groq"""
+    try:
+        response = groq_client.embeddings.create(
+            model=GROQ_EMBEDDING_MODEL,
+            input=text
+        )
+        return response.data[0].embedding
+    except Exception as e:
+        print(f"Embedding error: {e}")
+        raise
+
+def search_pinecone(query: str, top_k: int = 5):
+    """Search Pinecone"""
+    try:
+        query_embedding = get_embedding(query)
+        results = index.query(
+            vector=query_embedding,
+            top_k=top_k,
+            include_metadata=True
+        )
+        return results.get('matches', [])
+    except Exception as e:
+        print(f"Search error: {e}")
+        raise
+
+def generate_response(query: str, context: str):
+    """Generate response using Groq"""
+    try:
+        response = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": """You are a helpful assistant that answers questions based on the provided context.
+If the context doesn't contain the answer, say "I could not find that information in the documents."
+Be concise and accurate. Use the context to support your answers."""},
+                {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
+            ],
+            temperature=0.3,
+            max_tokens=500
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"Generation error: {e}")
+        raise
 
 memory = ConversationMemory()
-session_focus = {}
-
-# Improved prompt
-PROMPT = """You are a precise and insightful research assistant.  
-Your answers are based **only** on the document context below.
-
-**Rules:**
-- If the context contains enough detail, provide a **comprehensive answer** with examples, comparisons, or steps (as appropriate).
-- Structure your answer clearly: use **bullet points** for lists, **paragraphs** for explanations.
-- Do **not** mention the context itself (e.g., "according to the document").
-- If the context lacks the answer, say: "I could not find that information in the knowledge base."
-- Match the level of detail to the question: a simple question gets a concise answer; a complex or open‑ended question gets a thorough one.
-
-**Active filter:** {focus_info}
-
-**Context from documents:**
-{context}
-
-**Conversation history:**
-{chat_history}
-
-**Question:** {question}
-**Answer:**"""
-
-QA_PROMPT = ChatPromptTemplate.from_template(PROMPT)
-
-def format_docs(docs):
-    parts = []
-    seen = set()
-    for doc in docs:
-        src = doc.metadata.get('source_file', '?')
-        if src in seen:
-            continue
-        seen.add(src)
-        page = doc.metadata.get('page_number', '?')
-        parts.append(f"[{src} p{page}]\n{doc.page_content[:800]}\n")
-    return "\n".join(parts)
-
-# Focus management
-def resolve_filename(user_input: str):
-    all_files = brain.get_all_filenames()
-    for f in all_files:
-        if user_input.lower() == f.lower():
-            return f
-    if not user_input.lower().endswith('.pdf'):
-        for f in all_files:
-            if f.lower() == user_input.lower() + '.pdf':
-                return f
-    return None
-
-def detect_focus_command(question: str):
-    q = question.lower()
-    patterns = [
-        r'only\s+use\s+([\w\-.]+(?:\.pdf)?)',
-        r'focus\s+on\s+([\w\-.]+(?:\.pdf)?)',
-        r'use\s+only\s+([\w\-.]+(?:\.pdf)?)',
-    ]
-    for pat in patterns:
-        m = re.search(pat, q)
-        if m:
-            candidate = m.group(1).strip()
-            resolved = resolve_filename(candidate)
-            if resolved:
-                return resolved
-            return candidate
-    if "clear focus" in q or "remove focus" in q or "no filter" in q:
-        return "CLEAR"
-    return None
 
 # Routes
 @app.route("/")
-def index():
-    if 'session_id' not in session:
-        session['session_id'] = str(uuid.uuid4())
-    return render_template("index.html")
+def home():
+    """Home endpoint"""
+    return jsonify({
+        "status": "ok",
+        "service": "RAG Chatbot API",
+        "documents_loaded": len(documents_metadata),
+        "pinecone_connected": True,
+        "groq_connected": True
+    })
+
+@app.route("/api/health", methods=["GET"])
+def health():
+    """Health check"""
+    return jsonify({
+        "status": "healthy",
+        "documents": len(documents_metadata)
+    })
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    data = request.get_json()
-    question = data.get("question", "").strip()
-    session_id = data.get("session_id", session.get("session_id", "default"))
-    category = data.get("category", "all")
+    """Main chat endpoint"""
+    try:
+        data = request.get_json()
+        question = data.get("question", "").strip()
+        session_id = data.get("session_id", "default")
 
-    if not question:
-        return jsonify({"error": "Question required"}), 400
+        if not question:
+            return jsonify({"error": "Question required"}), 400
 
-    focus_file = session_focus.get(session_id)
-    focus_cmd = detect_focus_command(question)
+        # Search Pinecone
+        matches = search_pinecone(question, top_k=5)
+        
+        if not matches:
+            return jsonify({
+                "answer": "I could not find relevant information in the knowledge base.",
+                "sources": []
+            })
 
-    if focus_cmd == "CLEAR":
-        session_focus.pop(session_id, None)
+        # Build context
+        context_parts = []
+        sources = []
+        for match in matches:
+            if match.get('score', 0) > 0.3:
+                text = match.get('metadata', {}).get('text', '')
+                source_file = match.get('metadata', {}).get('source_file', 'unknown')
+                page = match.get('metadata', {}).get('page_number', 1)
+                if text:
+                    context_parts.append(text)
+                    sources.append({
+                        'document': source_file,
+                        'page': page,
+                        'score': match.get('score', 0)
+                    })
+
+        if not context_parts:
+            return jsonify({
+                "answer": "I found some information but with low confidence. Please rephrase your question.",
+                "sources": []
+            })
+
+        context = "\n\n---\n\n".join(context_parts[:3])
+        answer = generate_response(question, context)
+
+        # Add to memory
         memory.add_message(session_id, "user", question)
-        memory.add_message(session_id, "assistant", "✅ Document filter cleared.")
-        return jsonify({"answer": "✅ Document filter cleared.", "sources": [], "focus": None})
+        memory.add_message(session_id, "assistant", answer)
 
-    if focus_cmd is not None:
-        all_files = brain.get_all_filenames()
-        if focus_cmd in all_files:
-            session_focus[session_id] = focus_cmd
-            msg = f"✅ Now focusing on **{focus_cmd}** only."
-        else:
-            msg = f"❌ Document `{focus_cmd}` not found. Available: {', '.join(all_files)}"
-        memory.add_message(session_id, "user", question)
-        memory.add_message(session_id, "assistant", msg)
-        return jsonify({"answer": msg, "sources": [], "focus": session_focus.get(session_id)})
-
-    history = memory.get_history(session_id, last_n=6)
-    history_str = "\n".join(
-        f"{'User' if m['role']=='user' else 'Assistant'}: {m['content']}"
-        for m in history[-6:]
-    ) if history else "No history"
-
-    if focus_file:
-        raw_docs = brain.search(question, k=30, category=category if category != "all" else None)
-        docs = [d for d in raw_docs if d.metadata.get('source_file', '').lower() == focus_file.lower()]
-        if not docs:
-            answer = f"I could not find any relevant information inside **{focus_file}**."
-            memory.add_message(session_id, "user", question)
-            memory.add_message(session_id, "assistant", answer)
-            return jsonify({"answer": answer, "sources": [], "focus": focus_file})
-        docs = docs[:6]
-    else:
-        docs = brain.intelligent_search(question, k=4, category=category if category != "all" else None)
-
-    context = format_docs(docs)
-    focus_info = f"Currently focused on: {focus_file}. Only use this document." if focus_file else "No active document filter."
-
-    chain = QA_PROMPT | llm | StrOutputParser()
-    answer = chain.invoke({
-        "context": context,
-        "chat_history": history_str,
-        "question": question,
-        "focus_info": focus_info
-    })
-
-    memory.add_message(session_id, "user", question)
-    memory.add_message(session_id, "assistant", answer)
-
-    seen_src = set()
-    sources = []
-    for doc in docs:
-        src = doc.metadata.get("source_file", "?")
-        if src not in seen_src:
-            seen_src.add(src)
-            sources.append({"document": src, "page": doc.metadata.get("page_number", "?")})
-
-    return jsonify({"answer": answer, "sources": sources, "focus": focus_file})
-
-@app.route("/api/focus", methods=["POST"])
-def set_focus():
-    data = request.get_json()
-    session_id = data.get("session_id", session.get("session_id", "default"))
-    filename = data.get("filename", None)
-    if filename:
-        session_focus[session_id] = filename
-    else:
-        session_focus.pop(session_id, None)
-    return jsonify({"focus": session_focus.get(session_id)})
-
-@app.route("/api/stats")
-def stats():
-    return jsonify(brain.get_stats())
-
-@app.route("/api/documents")
-def documents():
-    docs = []
-    for fname, meta in brain.documents_metadata.items():
-        docs.append({
-            "filename": fname,
-            "pages": meta.get("pages", 0),
-            "chunks": meta.get("chunks", 0),
-            "category": meta.get("category", "general")
+        return jsonify({
+            "answer": answer,
+            "sources": sources[:3],
+            "sources_count": len(sources)
         })
-    return jsonify({"documents": docs, "total": len(docs)})
 
-@app.route("/api/categories")
-def categories():
-    return jsonify({"categories": brain.get_categories()})
+    except Exception as e:
+        print(f"Chat error: {e}")
+        return jsonify({
+            "error": str(e),
+            "answer": "An error occurred while processing your request."
+        }), 500
 
-@app.route("/api/conversation/<session_id>", methods=["DELETE"])
-def clear_conversation(session_id):
-    memory.clear_session(session_id)
-    session_focus.pop(session_id, None)
-    return jsonify({"success": True})
+@app.route("/api/stats", methods=["GET"])
+def stats():
+    """Get stats"""
+    try:
+        stats = index.describe_index_stats()
+        return jsonify({
+            "total_documents": len(documents_metadata),
+            "total_chunks": stats.get('total_vector_count', 0),
+            "documents": list(documents_metadata.keys())
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/widget.js')
 def serve_widget():
@@ -231,4 +206,4 @@ def serve_widget():
 
 if __name__ == "__main__":
     print("\n🚀 Pinecone RAG Chatbot: http://127.0.0.1:5000")
-    app.run(debug=False, host="127.0.0.1", port=5000)
+    app.run(debug=False, host="0.0.0.0", port=5000)
