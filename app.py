@@ -1,11 +1,11 @@
-# app.py – Vercel-Optimized (No Cross-Encoder, Minimal Dependencies)
+# app.py – Vercel-Optimized with Static File Serving for Widget
 from dotenv import load_dotenv
 load_dotenv()
 
 import os
 import uuid
 import re
-from flask import Flask, request, jsonify, render_template, session
+from flask import Flask, request, jsonify, render_template, session, send_from_directory
 from brain import KnowledgeBrain
 from memory import ConversationMemory
 
@@ -13,7 +13,8 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-app = Flask(__name__)
+# Create Flask app with static folder
+app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.secret_key = os.urandom(24)
 
 print("🧠 Loading Knowledge Brain...")
@@ -99,11 +100,26 @@ def detect_focus_command(question: str):
         return "CLEAR"
     return None
 
+# ============================================================
+# ROUTES
+# ============================================================
+
 @app.route("/")
 def index():
     if 'session_id' not in session:
         session['session_id'] = str(uuid.uuid4())
     return render_template("index.html")
+
+# Static file serving for widget
+@app.route("/widget.js")
+def serve_widget():
+    """Serve the embeddable chat widget JavaScript."""
+    return send_from_directory('static', 'widget.js')
+
+@app.route("/widget-demo")
+def widget_demo():
+    """Serve the widget demo page."""
+    return send_from_directory('static', 'widget-demo.html')
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
@@ -214,15 +230,10 @@ def clear_conversation(session_id):
     session_focus.pop(session_id, None)
     return jsonify({"success": True})
 
-@app.route("/widget.js")
-def serve_widget():
-    return app.send_static_file("widget.js")
-
-@app.route("/widget-demo")
-def widget_demo():
-    return app.send_static_file("widget-demo.html")
-
-
 if __name__ == "__main__":
-    print("\n🚀 Pinecone RAG Chatbot: http://127.0.0.1:5000")
+    print("\n" + "=" * 60)
+    print("🚀 Pinecone RAG Chatbot: http://127.0.0.1:5000")
+    print("📦 Widget: http://127.0.0.1:5000/widget.js")
+    print("📄 Demo: http://127.0.0.1:5000/widget-demo")
+    print("=" * 60)
     app.run(debug=False, host="127.0.0.1", port=5000)
