@@ -1,4 +1,4 @@
-# app.py – Complete Working Version with Fixed Widget
+# app.py – Final Working Version with XMLHttpRequest Widget
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -234,27 +234,26 @@ def index():
     """
 
 # ============================================================
-# WIDGET JAVASCRIPT (FIXED - Always calls your Vercel API)
+# WIDGET JAVASCRIPT (Uses XMLHttpRequest for better compatibility)
 # ============================================================
 @app.route("/widget.js")
 def widget():
     js = """
     (function(){
-        // FIXED: Always use your Vercel URL, not the embedding site's URL
         var api = 'https://advanced-6jxkyhxli-gat6.vercel.app';
         
+        // Create button
         var btn = document.createElement('button');
         btn.innerHTML = '🧠';
-        btn.style.cssText = 'position:fixed;bottom:20px;right:20px;width:60px;height:60px;border-radius:50%;background:#533483;color:white;border:none;cursor:pointer;font-size:28px;z-index:99999;box-shadow:0 4px 20px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;';
+        btn.style.cssText = 'position:fixed;bottom:20px;right:20px;width:60px;height:60px;border-radius:50%;background:#533483;color:white;border:none;cursor:pointer;font-size:28px;z-index:99999;box-shadow:0 4px 20px rgba(0,0,0,0.3);';
         
+        // Create window
         var win = document.createElement('div');
-        win.style.cssText = 'position:fixed;bottom:90px;right:20px;width:380px;height:500px;background:#16213e;border-radius:16px;z-index:99999;display:none;flex-direction:column;overflow:hidden;font-family:sans-serif;box-shadow:0 8px 40px rgba(0,0,0,0.4);';
+        win.id = 'cw-win';
+        win.innerHTML = '<div style="background:#533483;color:white;padding:16px;font-weight:bold;display:flex;justify-content:space-between;">🧠 Knowledge Bot<span onclick="document.getElementById(\\'cw-win\\').style.display=\\'none\\';document.getElementById(\\'cw-btn\\').style.display=\\'block\\'" style="cursor:pointer;">✕</span></div><div id="cw-msgs" style="height:380px;overflow-y:auto;padding:16px;font-size:14px;"><div style="color:white;margin-bottom:8px;">Hello! Ask me anything.</div></div><div style="display:flex;padding:12px;gap:8px;"><input id="cw-inp" placeholder="Ask a question..." style="flex:1;padding:10px;border:none;border-radius:20px;font-size:14px;outline:none;"><button onclick="cwSend()" style="padding:10px 18px;background:#533483;color:white;border:none;border-radius:20px;cursor:pointer;">Send</button></div>';
+        win.style.cssText = 'position:fixed;bottom:90px;right:20px;width:380px;height:500px;background:#16213e;border-radius:16px;z-index:99999;display:none;flex-direction:column;overflow:hidden;font-family:sans-serif;box-shadow:0 8px 40px rgba(0,0,0,0.4);color:white;';
         
-        win.innerHTML = '<div style="background:linear-gradient(135deg,#0f3460,#533483);color:white;padding:16px;font-weight:bold;display:flex;justify-content:space-between;align-items:center;">🧠 Knowledge Bot<span id="cw-close" style="cursor:pointer;font-size:18px;">✕</span></div>' +
-            '<div id="cw-msgs" style="flex:1;overflow-y:auto;padding:16px;"><div style="color:white;font-size:14px;">Hello! Ask me anything.</div></div>' +
-            '<div style="display:flex;padding:12px;border-top:1px solid #1a1a3e;gap:8px;">' +
-            '<input id="cw-inp" placeholder="Ask a question..." style="flex:1;padding:10px;border:none;border-radius:20px;background:#1a1a3e;color:white;font-size:14px;outline:none;">' +
-            '<button id="cw-send" style="padding:10px 18px;background:#533483;color:white;border:none;border-radius:20px;cursor:pointer;">Send</button></div>';
+        btn.id = 'cw-btn';
         
         document.body.appendChild(btn);
         document.body.appendChild(win);
@@ -268,44 +267,46 @@ def widget():
             document.getElementById('cw-inp').focus();
         };
         
-        document.getElementById('cw-close').onclick = function(){
-            win.style.display = 'none';
-            btn.style.display = 'flex';
-        };
-        
-        function addMsg(text, role) {
-            var d = document.createElement('div');
-            d.style.cssText = 'padding:8px 12px;margin:4px 0;border-radius:10px;font-size:13px;color:white;max-width:85%;word-wrap:break-word;' + (role==='user'?'background:#533483;margin-left:auto;':'background:#1a1a3e;');
-            d.textContent = text;
-            document.getElementById('cw-msgs').appendChild(d);
-            document.getElementById('cw-msgs').scrollTop = document.getElementById('cw-msgs').scrollHeight;
-        }
-        
-        async function send() {
+        window.cwSend = function(){
             var inp = document.getElementById('cw-inp');
             var q = inp.value.trim();
             if(!q || loading) return;
+            
             loading = true;
-            addMsg(q, 'user');
+            
+            // Add user message
+            var msgs = document.getElementById('cw-msgs');
+            msgs.innerHTML += '<div style="text-align:right;margin:8px 0;"><span style="background:#533483;padding:8px 12px;border-radius:12px;display:inline-block;max-width:80%;">' + q + '</span></div>';
             inp.value = '';
-            try {
-                var r = await fetch(api + '/api/chat', {
-                    method:'POST',
-                    headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify({question:q, session_id:session})
-                });
-                var d = await r.json();
-                addMsg(d.answer||'Error', 'bot');
-            } catch(e) {
-                addMsg('Connection error. Please try again.', 'bot');
-            }
-            loading = false;
-        }
+            msgs.scrollTop = msgs.scrollHeight;
+            
+            // Call API using XMLHttpRequest
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', api + '/api/chat', true);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.onload = function(){
+                loading = false;
+                if(xhr.status === 200){
+                    var data = JSON.parse(xhr.responseText);
+                    msgs.innerHTML += '<div style="margin:8px 0;"><span style="background:#1a1a3e;padding:8px 12px;border-radius:12px;display:inline-block;max-width:80%;">' + (data.answer || 'No answer') + '</span></div>';
+                } else {
+                    msgs.innerHTML += '<div style="margin:8px 0;color:#ff6b6b;">Error: ' + xhr.status + '</div>';
+                }
+                msgs.scrollTop = msgs.scrollHeight;
+            };
+            xhr.onerror = function(){
+                loading = false;
+                msgs.innerHTML += '<div style="margin:8px 0;color:#ff6b6b;">Connection error. Please try again.</div>';
+                msgs.scrollTop = msgs.scrollHeight;
+            };
+            xhr.send(JSON.stringify({question: q, session_id: session}));
+        };
         
-        document.getElementById('cw-send').onclick = send;
-        document.getElementById('cw-inp').addEventListener('keypress', function(e){ if(e.key==='Enter') send(); });
+        document.getElementById('cw-inp').addEventListener('keypress', function(e){
+            if(e.key === 'Enter') cwSend();
+        });
         
-        console.log('✅ Chat widget ready! API: ' + api);
+        console.log('✅ Widget loaded!');
     })();
     """
     return Response(js, mimetype='application/javascript')
