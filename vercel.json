@@ -4,11 +4,10 @@
     { "source": "/widget-demo", "destination": "/api/widget-demo" },
     { "source": "/(.*)", "destination": "/api/index" }
   ],
-  "env": {
-    "PINECONE_API_KEY": "",
-    "PINECONE_INDEX_HOST": "",
-    "GROQ_API_KEY": "",
-    "PINECONE_INDEX_NAME": "knowledge-brain",
-    "GROQ_CHAT_MODEL": "mixtral-8x7b-32768"
-  }
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python"
+    }
+  ]
 }

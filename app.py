@@ -1,6 +1,6 @@
 """
 RAG Chatbot with Groq API, Pinecone, and Auto-Ingestion
-Deployable on Vercel - FIXED VERSION
+Deployable on Vercel - COMPLETE FIXED VERSION
 """
 
 import os
@@ -12,6 +12,7 @@ from pinecone import Pinecone
 from groq import Groq
 from typing import List, Dict, Any
 from functools import lru_cache
+import requests
 import time
 
 # Force flush for Vercel logs
@@ -55,6 +56,7 @@ print(f"🔧 CONFIG:", flush=True)
 print(f"   PINECONE_INDEX_NAME: {PINECONE_INDEX_NAME}", flush=True)
 print(f"   PINECONE_INDEX_HOST: {PINECONE_INDEX_HOST}", flush=True)
 print(f"   GROQ_CHAT_MODEL: {GROQ_CHAT_MODEL}", flush=True)
+print(f"   PDF_DIRECTORY: {PDF_DIRECTORY}", flush=True)
 
 # ===== GLOBAL STATE =====
 _pinecone_index = None
@@ -62,34 +64,84 @@ _groq_client = None
 
 # ===== INITIALIZE CLIENTS =====
 def initialize_clients():
-    """Initialize Groq and Pinecone clients"""
+    """Initialize Groq and Pinecone clients with better error handling"""
     global _pinecone_index, _groq_client
     
+    print("=" * 60, flush=True)
+    print("🔧 INITIALIZING CLIENTS...", flush=True)
+    print("=" * 60, flush=True)
+    
+    # Check environment variables
+    pinecone_key = os.getenv("PINECONE_API_KEY")
+    pinecone_host = os.getenv("PINECONE_INDEX_HOST")
+    groq_key = os.getenv("GROQ_API_KEY")
+    
+    print(f"📌 PINECONE_API_KEY: {'✅ SET' if pinecone_key else '❌ MISSING'}", flush=True)
+    print(f"📌 PINECONE_INDEX_HOST: {'✅ SET' if pinecone_host else '❌ MISSING'}", flush=True)
+    print(f"📌 GROQ_API_KEY: {'✅ SET' if groq_key else '❌ MISSING'}", flush=True)
+    
+    # Initialize Groq
     try:
-        # Groq client
-        if GROQ_API_KEY:
-            _groq_client = Groq(api_key=GROQ_API_KEY)
-            logger.info("✅ Groq client initialized")
-        else:
-            logger.error("❌ GROQ_API_KEY not set")
-        
-        # Pinecone with new v5 syntax
-        if PINECONE_API_KEY and PINECONE_INDEX_HOST:
-            pc = Pinecone(api_key=PINECONE_API_KEY)
-            _pinecone_index = pc.Index(host=PINECONE_INDEX_HOST)
-            logger.info(f"✅ Pinecone index '{PINECONE_INDEX_NAME}' connected")
+        if groq_key:
+            _groq_client = Groq(api_key=groq_key)
+            print("✅ Groq client initialized successfully", flush=True)
             
-            # Check if documents exist
-            stats = _pinecone_index.describe_index_stats()
-            vector_count = stats.get('total_vector_count', 0)
-            logger.info(f"   📊 Vector count: {vector_count}")
+            # Test Groq connection
+            try:
+                # Simple test to verify API key works
+                test_response = _groq_client.chat.completions.create(
+                    model=GROQ_CHAT_MODEL,
+                    messages=[{"role": "user", "content": "Say 'Hello'"}],
+                    max_tokens=5
+                )
+                print("✅ Groq API test successful", flush=True)
+            except Exception as e:
+                print(f"⚠️ Groq API test failed: {e}", flush=True)
         else:
-            logger.error("❌ PINECONE_API_KEY or PINECONE_INDEX_HOST not set")
+            print("❌ GROQ_API_KEY not set", flush=True)
+            _groq_client = None
+    except Exception as e:
+        print(f"❌ Groq initialization error: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        _groq_client = None
+    
+    # Initialize Pinecone with new v5 syntax
+    try:
+        if pinecone_key and pinecone_host:
+            print("🔄 Connecting to Pinecone...", flush=True)
+            pc = Pinecone(api_key=pinecone_key)
+            _pinecone_index = pc.Index(host=pinecone_host)
+            print(f"✅ Pinecone index connected successfully", flush=True)
+            
+            # Test connection and get stats
+            try:
+                stats = _pinecone_index.describe_index_stats()
+                vector_count = stats.get('total_vector_count', 0)
+                print(f"   📊 Vector count: {vector_count}", flush=True)
+                
+                if vector_count == 0:
+                    print("   ⚠️ No vectors found in index", flush=True)
+                    print("   💡 Run ingestion locally: python brain.py", flush=True)
+                else:
+                    print(f"   ✅ {vector_count} vectors loaded", flush=True)
+            except Exception as e:
+                print(f"   ⚠️ Could not get index stats: {e}", flush=True)
+        else:
+            print("❌ PINECONE_API_KEY or PINECONE_INDEX_HOST not set", flush=True)
+            _pinecone_index = None
             
     except Exception as e:
-        logger.error(f"❌ Initialization error: {e}")
+        print(f"❌ Pinecone initialization error: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
         _pinecone_index = None
-        _groq_client = None
+    
+    print("=" * 60, flush=True)
+    print("✅ INITIALIZATION COMPLETE", flush=True)
+    print(f"   Pinecone: {'✅ Connected' if _pinecone_index else '❌ Failed'}", flush=True)
+    print(f"   Groq: {'✅ Connected' if _groq_client else '❌ Failed'}", flush=True)
+    print("=" * 60, flush=True)
 
 # ===== GROQ FUNCTIONS =====
 @lru_cache(maxsize=100)
@@ -102,8 +154,12 @@ def get_embedding(text: str) -> List[float]:
     
     try:
         # Use Pinecone's inference API for embeddings
-        import requests
-        url = f"https://{PINECONE_INDEX_HOST.split('https://')[-1]}/embeddings"
+        # Extract host from index host
+        host_url = PINECONE_INDEX_HOST
+        if not host_url.startswith('https://'):
+            host_url = f'https://{host_url}'
+        
+        url = f"{host_url}/embeddings"
         headers = {
             "Api-Key": PINECONE_API_KEY,
             "Content-Type": "application/json"
@@ -111,12 +167,18 @@ def get_embedding(text: str) -> List[float]:
         payload = {
             "model": "multilingual-e5-large",
             "parameters": {"input_type": "passage"},
-            "inputs": [text[:8000]]
+            "inputs": [text[:8000]]  # Limit text length
         }
-        response = requests.post(url, json=payload, headers=headers)
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
         response.raise_for_status()
         data = response.json()
-        return data["data"][0]["values"]
+        
+        if 'data' in data and len(data['data']) > 0:
+            return data["data"][0]["values"]
+        else:
+            raise Exception("No embedding returned")
+            
     except Exception as e:
         logger.error(f"Embedding error: {e}")
         raise
@@ -128,16 +190,20 @@ def query_pinecone(query: str, top_k: int = 5) -> List[Dict[str, Any]]:
     if _pinecone_index is None:
         raise Exception("Pinecone index not available")
     
-    # Get query embedding
-    query_embedding = get_embedding(query)
-    
-    results = _pinecone_index.query(
-        vector=query_embedding,
-        top_k=top_k,
-        include_metadata=True
-    )
-    
-    return results.get('matches', [])
+    try:
+        # Get query embedding
+        query_embedding = get_embedding(query)
+        
+        results = _pinecone_index.query(
+            vector=query_embedding,
+            top_k=top_k,
+            include_metadata=True
+        )
+        
+        return results.get('matches', [])
+    except Exception as e:
+        logger.error(f"Query error: {e}")
+        raise
 
 def generate_response(query: str, context: str) -> str:
     """Generate a response using Groq API"""
@@ -152,7 +218,8 @@ def generate_response(query: str, context: str) -> str:
             messages=[
                 {"role": "system", "content": """You are a helpful assistant that answers questions based on the provided context.
 If the context doesn't contain the answer, say "I could not find that information in the documents."
-Be concise and accurate. Use the context to support your answers."""},
+Be concise and accurate. Use the context to support your answers.
+Always cite the source document when possible."""},
                 {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
             ],
             temperature=0.3,
@@ -163,161 +230,6 @@ Be concise and accurate. Use the context to support your answers."""},
     except Exception as e:
         logger.error(f"Chat generation error: {e}")
         raise
-
-# ===== API ROUTES =====
-
-@app.route('/')
-def home():
-    """Home endpoint"""
-    doc_status = check_documents_exist()
-    
-    return jsonify({
-        'status': 'ok',
-        'service': 'RAG Chatbot',
-        'pinecone_connected': _pinecone_index is not None,
-        'groq_connected': _groq_client is not None,
-        'documents_loaded': doc_status['has_documents'],
-        'vector_count': doc_status['vector_count']
-    })
-
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    doc_status = check_documents_exist()
-    
-    return jsonify({
-        'status': 'healthy',
-        'pinecone_connected': _pinecone_index is not None,
-        'groq_connected': _groq_client is not None,
-        'documents_loaded': doc_status['has_documents'],
-        'vector_count': doc_status['vector_count']
-    })
-
-@app.route('/api/stats', methods=['GET'])
-def get_stats():
-    """Get stats about the knowledge base"""
-    try:
-        if _pinecone_index is None:
-            return jsonify({
-                'total_documents': 0,
-                'total_chunks': 0,
-                'total_pages': 0,
-                'error': 'Pinecone not connected'
-            })
-        
-        stats = _pinecone_index.describe_index_stats()
-        return jsonify({
-            'total_documents': 10,  # From your metadata
-            'total_chunks': stats.get('total_vector_count', 0),
-            'total_pages': 0
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/categories', methods=['GET'])
-def get_categories():
-    """Get all categories"""
-    return jsonify({
-        'categories': ['general', 'academic', 'medical', 'resume/cv', 'guide']
-    })
-
-@app.route('/api/chat', methods=['POST'])
-def chat():
-    """Main chat endpoint"""
-    try:
-        data = request.get_json()
-        
-        if not data or 'question' not in data:
-            return jsonify({'error': 'Missing "question" field'}), 400
-        
-        user_message = data['question'].strip()
-        
-        if not user_message:
-            return jsonify({'error': 'Empty message'}), 400
-        
-        # Check if clients are available
-        if _pinecone_index is None:
-            return jsonify({
-                'answer': "⚠️ Pinecone is not available. Please check your configuration.",
-                'sources': []
-            })
-        
-        if _groq_client is None:
-            return jsonify({
-                'answer': "⚠️ Groq is not available. Please check your configuration.",
-                'sources': []
-            })
-        
-        # Check if documents exist
-        doc_status = check_documents_exist()
-        
-        if not doc_status['has_documents']:
-            return jsonify({
-                'answer': "⚠️ No documents have been ingested yet. Please run ingestion first.",
-                'sources': []
-            })
-        
-        # Query Pinecone
-        try:
-            matches = query_pinecone(user_message, top_k=5)
-        except Exception as e:
-            return jsonify({
-                'answer': f"Error querying Pinecone: {str(e)}",
-                'sources': []
-            }), 500
-        
-        if not matches:
-            return jsonify({
-                'answer': "I could not find any relevant information in the documents for your question.",
-                'sources': []
-            })
-        
-        # Build context
-        context_parts = []
-        sources = []
-        
-        for match in matches:
-            if match.get('score', 0) > 0.3:
-                text = match.get('metadata', {}).get('text', '')
-                source_file = match.get('metadata', {}).get('source_file', 'unknown')
-                page = match.get('metadata', {}).get('page_number', 1)
-                if text:
-                    context_parts.append(text)
-                    sources.append({
-                        'text': text[:200] + '...' if len(text) > 200 else text,
-                        'score': match.get('score', 0),
-                        'document': source_file,
-                        'page': page
-                    })
-        
-        if not context_parts:
-            return jsonify({
-                'answer': "I found some potentially relevant information, but none with high enough confidence. Please rephrase your question.",
-                'sources': []
-            })
-        
-        context = "\n\n---\n\n".join(context_parts[:3])
-        
-        # Generate response
-        try:
-            response = generate_response(user_message, context)
-        except Exception as e:
-            return jsonify({
-                'answer': f"Error generating response: {str(e)}",
-                'sources': []
-            }), 500
-        
-        return jsonify({
-            'answer': response,
-            'sources': sources[:3],
-            'sources_count': len(sources)
-        })
-        
-    except Exception as e:
-        logger.error(f"Chat error: {e}")
-        return jsonify({
-            'error': str(e)
-        }), 500
 
 def check_documents_exist() -> Dict[str, Any]:
     """Check if documents exist in Pinecone"""
@@ -350,6 +262,288 @@ def check_documents_exist() -> Dict[str, Any]:
             'message': f'Error: {str(e)}'
         }
 
+# ===== API ROUTES =====
+
+@app.route('/')
+def home():
+    """Home endpoint"""
+    doc_status = check_documents_exist()
+    
+    return jsonify({
+        'status': 'ok',
+        'service': 'RAG Chatbot',
+        'pinecone_connected': _pinecone_index is not None,
+        'groq_connected': _groq_client is not None,
+        'documents_loaded': doc_status['has_documents'],
+        'vector_count': doc_status['vector_count'],
+        'message': doc_status['message']
+    })
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    doc_status = check_documents_exist()
+    
+    return jsonify({
+        'status': 'healthy' if (_pinecone_index and _groq_client) else 'degraded',
+        'pinecone_connected': _pinecone_index is not None,
+        'groq_connected': _groq_client is not None,
+        'documents_loaded': doc_status['has_documents'],
+        'vector_count': doc_status['vector_count']
+    })
+
+@app.route('/api/debug', methods=['GET'])
+def debug_info():
+    """Debug endpoint to check environment variables and connections"""
+    import os
+    
+    # Check if variables exist (without exposing full values)
+    env_status = {
+        'PINECONE_API_KEY': {
+            'exists': bool(os.getenv('PINECONE_API_KEY')),
+            'length': len(os.getenv('PINECONE_API_KEY', '')) if os.getenv('PINECONE_API_KEY') else 0,
+            'preview': os.getenv('PINECONE_API_KEY', '')[:10] + '...' if os.getenv('PINECONE_API_KEY') else 'NOT SET'
+        },
+        'PINECONE_INDEX_HOST': {
+            'exists': bool(os.getenv('PINECONE_INDEX_HOST')),
+            'value': os.getenv('PINECONE_INDEX_HOST', 'NOT SET')
+        },
+        'GROQ_API_KEY': {
+            'exists': bool(os.getenv('GROQ_API_KEY')),
+            'length': len(os.getenv('GROQ_API_KEY', '')) if os.getenv('GROQ_API_KEY') else 0,
+            'preview': os.getenv('GROQ_API_KEY', '')[:10] + '...' if os.getenv('GROQ_API_KEY') else 'NOT SET'
+        },
+        'PINECONE_INDEX_NAME': {
+            'value': os.getenv('PINECONE_INDEX_NAME', 'knowledge-brain')
+        },
+        'GROQ_CHAT_MODEL': {
+            'value': os.getenv('GROQ_CHAT_MODEL', 'mixtral-8x7b-32768')
+        },
+        'PDF_DIRECTORY': {
+            'value': os.getenv('PDF_DIRECTORY', './pdfs')
+        }
+    }
+    
+    # Check Pinecone connection
+    pinecone_status = 'NOT INITIALIZED'
+    groq_status = 'NOT INITIALIZED'
+    
+    global _pinecone_index, _groq_client
+    
+    if _pinecone_index is not None:
+        try:
+            stats = _pinecone_index.describe_index_stats()
+            vector_count = stats.get('total_vector_count', 0)
+            pinecone_status = f'CONNECTED - {vector_count} vectors'
+        except Exception as e:
+            pinecone_status = f'ERROR: {str(e)[:100]}'
+    else:
+        pinecone_status = 'DISCONNECTED'
+    
+    if _groq_client is not None:
+        try:
+            # Test Groq with a simple request
+            test_response = _groq_client.chat.completions.create(
+                model=GROQ_CHAT_MODEL,
+                messages=[{"role": "user", "content": "Hi"}],
+                max_tokens=5
+            )
+            groq_status = 'CONNECTED - Test passed'
+        except Exception as e:
+            groq_status = f'CONNECTED but test failed: {str(e)[:100]}'
+    else:
+        groq_status = 'DISCONNECTED'
+    
+    return jsonify({
+        'environment_variables': env_status,
+        'pinecone_status': pinecone_status,
+        'groq_status': groq_status,
+        'all_env_keys': [k for k in os.environ.keys() if not k.startswith('_')],
+        'has_pinecone_key': bool(os.getenv('PINECONE_API_KEY')),
+        'has_groq_key': bool(os.getenv('GROQ_API_KEY')),
+        'has_pinecone_host': bool(os.getenv('PINECONE_INDEX_HOST'))
+    })
+
+@app.route('/api/stats', methods=['GET'])
+def get_stats():
+    """Get stats about the knowledge base"""
+    try:
+        if _pinecone_index is None:
+            return jsonify({
+                'total_documents': 0,
+                'total_chunks': 0,
+                'total_pages': 0,
+                'error': 'Pinecone not connected',
+                'connected': False
+            })
+        
+        stats = _pinecone_index.describe_index_stats()
+        vector_count = stats.get('total_vector_count', 0)
+        
+        # Try to get document count from metadata
+        # Since we can't query all, return what we know
+        return jsonify({
+            'total_documents': 10,  # From your metadata
+            'total_chunks': vector_count,
+            'total_pages': 0,
+            'connected': True,
+            'vector_count': vector_count,
+            'index_name': PINECONE_INDEX_NAME
+        })
+    except Exception as e:
+        return jsonify({
+            'error': str(e),
+            'connected': False
+        }), 500
+
+@app.route('/api/categories', methods=['GET'])
+def get_categories():
+    """Get all categories"""
+    return jsonify({
+        'categories': ['general', 'academic', 'medical', 'resume/cv', 'guide']
+    })
+
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    """Main chat endpoint"""
+    try:
+        data = request.get_json()
+        
+        if not data or 'question' not in data:
+            return jsonify({'error': 'Missing "question" field'}), 400
+        
+        user_message = data['question'].strip()
+        
+        if not user_message:
+            return jsonify({'error': 'Empty message'}), 400
+        
+        # Check if clients are available
+        if _pinecone_index is None:
+            return jsonify({
+                'answer': "⚠️ Pinecone is not available. Please check your configuration.",
+                'sources': [],
+                'error': 'pinecone_not_connected'
+            })
+        
+        if _groq_client is None:
+            return jsonify({
+                'answer': "⚠️ Groq is not available. Please check your configuration.",
+                'sources': [],
+                'error': 'groq_not_connected'
+            })
+        
+        # Check if documents exist
+        doc_status = check_documents_exist()
+        
+        if not doc_status['has_documents']:
+            return jsonify({
+                'answer': "⚠️ No documents have been ingested yet. Please run ingestion first.\n\nTo ingest documents:\n1. Run `python brain.py` locally\n2. Or use the ingestion script provided",
+                'sources': [],
+                'document_status': doc_status
+            })
+        
+        # Query Pinecone
+        try:
+            matches = query_pinecone(user_message, top_k=5)
+        except Exception as e:
+            logger.error(f"Query error: {e}")
+            return jsonify({
+                'answer': f"Error querying knowledge base: {str(e)}",
+                'sources': [],
+                'error': str(e)
+            }), 500
+        
+        if not matches:
+            return jsonify({
+                'answer': "I could not find any relevant information in the documents for your question.",
+                'sources': []
+            })
+        
+        # Build context and sources
+        context_parts = []
+        sources = []
+        
+        for match in matches:
+            if match.get('score', 0) > 0.3:  # Lower threshold for more results
+                text = match.get('metadata', {}).get('text', '')
+                source_file = match.get('metadata', {}).get('source_file', 'unknown')
+                page = match.get('metadata', {}).get('page_number', 1)
+                if text:
+                    context_parts.append(text)
+                    sources.append({
+                        'text': text[:200] + '...' if len(text) > 200 else text,
+                        'score': match.get('score', 0),
+                        'document': source_file,
+                        'page': page
+                    })
+        
+        if not context_parts:
+            return jsonify({
+                'answer': "I found some potentially relevant information, but none with high enough confidence. Please rephrase your question.",
+                'sources': []
+            })
+        
+        context = "\n\n---\n\n".join(context_parts[:3])
+        
+        # Generate response
+        try:
+            response = generate_response(user_message, context)
+        except Exception as e:
+            logger.error(f"Generation error: {e}")
+            return jsonify({
+                'answer': f"Error generating response: {str(e)}",
+                'sources': sources[:3]
+            }), 500
+        
+        return jsonify({
+            'answer': response,
+            'sources': sources[:3],
+            'sources_count': len(sources),
+            'document_status': doc_status
+        })
+        
+    except Exception as e:
+        logger.error(f"Chat error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': str(e),
+            'answer': "An unexpected error occurred. Please try again."
+        }), 500
+
+@app.route('/api/chat-widget', methods=['POST'])
+def chat_widget():
+    """Chat endpoint specifically for the widget (uses 'message' field)"""
+    try:
+        data = request.get_json()
+        
+        if not data or 'message' not in data:
+            return jsonify({'error': 'Missing "message" field'}), 400
+        
+        user_message = data['message'].strip()
+        
+        if not user_message:
+            return jsonify({'error': 'Empty message'}), 400
+        
+        # Forward to main chat handler
+        # Reformat request to use 'question' field
+        data['question'] = user_message
+        
+        # Use the same logic as /api/chat
+        response = chat()
+        
+        # If response is a tuple, get the JSON data
+        if isinstance(response, tuple):
+            return response
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Widget chat error: {e}")
+        return jsonify({
+            'error': str(e)
+        }), 500
+
 # ===== ERROR HANDLERS =====
 @app.errorhandler(404)
 def not_found(e):
@@ -372,21 +566,26 @@ if __name__ == '__main__':
     
     if missing_vars:
         print(f"⚠️ Missing environment variables: {', '.join(missing_vars)}", flush=True)
-        print("Please check your .env file", flush=True)
+        print("Please check your .env file and Vercel environment variables", flush=True)
+    else:
+        print("✅ All required environment variables are set", flush=True)
     
     # Initialize clients
     initialize_clients()
     
     # Print status
     doc_status = check_documents_exist()
-    print(f"📊 Document status: {doc_status['status']}", flush=True)
+    print(f"\n📊 Document status: {doc_status['status']}", flush=True)
     if doc_status['has_documents']:
         print(f"   ✅ {doc_status['vector_count']} vectors loaded", flush=True)
     else:
-        print("   ⚠️ No documents found", flush=True)
+        print("   ⚠️ No documents found in Pinecone", flush=True)
+        print("   💡 Run `python brain.py` locally to ingest documents", flush=True)
     
-    print(f"💬 Chat model: {GROQ_CHAT_MODEL}", flush=True)
+    print(f"\n💬 Chat model: {GROQ_CHAT_MODEL}", flush=True)
+    print(f"📚 Embedding model: multilingual-e5-large (384-dim)", flush=True)
     
     # Start the Flask app
-    print("🚀 Starting Flask server on port 5000...", flush=True)
+    print("\n🚀 Starting Flask server on port 5000...", flush=True)
+    print("=" * 60, flush=True)
     app.run(debug=False, host='0.0.0.0', port=5000)
