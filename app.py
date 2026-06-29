@@ -1,4 +1,4 @@
-# app.py – Pinecone RAG Chatbot (with improved prompt)
+# app.py – Vercel-Optimized (No Cross-Encoder, Minimal Dependencies)
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -33,18 +33,16 @@ llm = ChatGroq(
 memory = ConversationMemory()
 session_focus = {}
 
-# ------------------------------------------------------------------
-# IMPROVED PROMPT – deeper, structured, no robotic phrases
-# ------------------------------------------------------------------
 PROMPT = """You are a precise and insightful research assistant.  
 Your answers are based **only** on the document context below.
 
 **Rules:**
 - If the context contains enough detail, provide a **comprehensive answer** with examples, comparisons, or steps (as appropriate).
 - Structure your answer clearly: use **bullet points** for lists, **paragraphs** for explanations.
-- Do **not** mention the context itself (e.g., “according to the document”).
-- If the context lacks the answer, say: “I could not find that information in the knowledge base.”
+- Do **not** mention the context itself (e.g., "according to the document").
+- If the context lacks the answer, say: "I could not find that information in the knowledge base."
 - Match the level of detail to the question: a simple question gets a concise answer; a complex or open‑ended question gets a thorough one.
+- **Never** repeat the same sentence more than once.
 
 **Active filter:** {focus_info}
 
@@ -71,9 +69,6 @@ def format_docs(docs):
         parts.append(f"[{src} p{page}]\n{doc.page_content[:800]}\n")
     return "\n".join(parts)
 
-# ------------------------------------------------------------------
-# Focus management
-# ------------------------------------------------------------------
 def resolve_filename(user_input: str):
     all_files = brain.get_all_filenames()
     for f in all_files:
@@ -104,9 +99,6 @@ def detect_focus_command(question: str):
         return "CLEAR"
     return None
 
-# ------------------------------------------------------------------
-# Routes
-# ------------------------------------------------------------------
 @app.route("/")
 def index():
     if 'session_id' not in session:
@@ -126,7 +118,6 @@ def chat():
     focus_file = session_focus.get(session_id)
     focus_cmd = detect_focus_command(question)
 
-    # --- handle focus commands ---
     if focus_cmd == "CLEAR":
         session_focus.pop(session_id, None)
         memory.add_message(session_id, "user", question)
@@ -144,7 +135,6 @@ def chat():
         memory.add_message(session_id, "assistant", msg)
         return jsonify({"answer": msg, "sources": [], "focus": session_focus.get(session_id)})
 
-    # --- retrieval ---
     history = memory.get_history(session_id, last_n=6)
     history_str = "\n".join(
         f"{'User' if m['role']=='user' else 'Assistant'}: {m['content']}"
@@ -166,7 +156,6 @@ def chat():
     context = format_docs(docs)
     focus_info = f"Currently focused on: {focus_file}. Only use this document." if focus_file else "No active document filter."
 
-    # --- generation ---
     chain = QA_PROMPT | llm | StrOutputParser()
     answer = chain.invoke({
         "context": context,

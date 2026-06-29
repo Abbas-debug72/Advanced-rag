@@ -7,4 +7,3 @@ langchain-community
 langchain-text-splitters
 pypdf
 pinecone
-optimum[onnxruntime]

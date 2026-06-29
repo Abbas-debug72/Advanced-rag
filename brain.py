@@ -1,4 +1,4 @@
-# brain.py – Vercel-Optimized with ONNX Embeddings (No PyTorch)
+# brain.py – Vercel-Optimized (Pinecone Built-in Embeddings, No Local ML)
 import os
 import re
 import json
@@ -10,12 +10,11 @@ from collections import Counter
 from pinecone import Pinecone
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 
 
 class KnowledgeBrain:
-    """Universal knowledge engine – Vercel-optimized with ONNX (lightweight)."""
+    """Universal knowledge engine – Zero local ML dependencies."""
 
     def __init__(
         self,
@@ -27,12 +26,7 @@ class KnowledgeBrain:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
 
-        print("📥 Loading lightweight ONNX embedding model...")
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            model_kwargs={'provider': 'CPUExecutionProvider'},
-            encode_kwargs={'normalize_embeddings': True}
-        )
+        print("📥 Using Pinecone built-in embeddings (no local model)")
 
         # Pinecone setup
         self.api_key = os.getenv("PINECONE_API_KEY")
@@ -48,6 +42,27 @@ class KnowledgeBrain:
         stats = self.get_stats()
         print(f"✅ Brain ready: {stats['total_documents']} docs, "
               f"{stats['total_chunks']} chunks\n")
+
+    # ------------------------------------------------------------------
+    # EMBEDDING METHODS (Pinecone Inference API)
+    # ------------------------------------------------------------------
+    def embed_texts(self, texts: List[str]) -> List[List[float]]:
+        """Embed documents using Pinecone's built-in inference."""
+        embeddings = self.pc.inference.embed(
+            model="llama-text-embed-v2",
+            inputs=texts,
+            parameters={"input_type": "passage"}
+        )
+        return [e.values for e in embeddings]
+
+    def embed_query(self, query: str) -> List[float]:
+        """Embed a single query."""
+        result = self.pc.inference.embed(
+            model="llama-text-embed-v2",
+            inputs=[query],
+            parameters={"input_type": "query"}
+        )
+        return result[0].values
 
     # ------------------------------------------------------------------
     # METADATA
@@ -199,15 +214,16 @@ class KnowledgeBrain:
                     })
 
                 chunks = text_splitter.split_documents(pages)
+                texts = [chunk.page_content for chunk in chunks]
+                embeddings = self.embed_texts(texts)
 
                 vectors = []
                 for chunk_idx, chunk in enumerate(chunks):
-                    embedding = self.embeddings.embed_documents([chunk.page_content])[0]
                     chunk.metadata["text"] = chunk.page_content
                     chunk.metadata["chunk_id"] = f"{filename}_chunk_{chunk_idx}"
                     vectors.append({
                         "id": chunk.metadata["chunk_id"],
-                        "values": embedding,
+                        "values": embeddings[chunk_idx],
                         "metadata": chunk.metadata
                     })
 
@@ -239,7 +255,7 @@ class KnowledgeBrain:
     # SEARCH
     # ------------------------------------------------------------------
     def search(self, query: str, k: int = 4, category: str = None) -> List[Document]:
-        query_embedding = self.embeddings.embed_query(query)
+        query_embedding = self.embed_query(query)
         filter_dict = None
         if category and category != "all":
             filter_dict = {"category": category}
