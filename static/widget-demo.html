@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Widget Demo - Knowledge Brain</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .card {
+            background: white;
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 24px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+
+        .card h2 {
+            color: #1a1a2e;
+            margin-bottom: 16px;
+            font-size: 1.4rem;
+        }
+
+        .card h3 {
+            color: #533483;
+            margin: 20px 0 10px;
+            font-size: 1.1rem;
+        }
+
+        .card p {
+            color: #4a5568;
+            line-height: 1.6;
+            margin-bottom: 12px;
+        }
+
+        .code-block {
+            background: #1a1a2e;
+            color: #00ff88;
+            padding: 20px;
+            border-radius: 10px;
+            overflow-x: auto;
+            font-size: 14px;
+            line-height: 1.6;
+            margin: 16px 0;
+        }
+
+        .code-block code {
+            font-family: 'Courier New', Courier, monospace;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin: 20px 0;
+        }
+
+        .feature-item {
+            background: #f7fafc;
+            padding: 16px;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .feature-item .icon {
+            font-size: 2rem;
+            margin-bottom: 8px;
+        }
+
+        .feature-item h4 {
+            color: #1a1a2e;
+            margin-bottom: 4px;
+        }
+
+        .feature-item p {
+            font-size: 0.85rem;
+            color: #718096;
+        }
+
+        .badge {
+            display: inline-block;
+            background: #533483;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            margin: 4px;
+        }
+
+        .steps {
+            list-style: none;
+            counter-reset: step;
+        }
+
+        .steps li {
+            counter-increment: step;
+            padding: 12px 0 12px 40px;
+            position: relative;
+            color: #4a5568;
+            line-height: 1.6;
+        }
+
+        .steps li::before {
+            content: counter(step);
+            position: absolute;
+            left: 0;
+            top: 10px;
+            width: 28px;
+            height: 28px;
+            background: #533483;
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 0.9rem;
+        }
+
+        .demo-section {
+            text-align: center;
+            padding: 40px;
+            background: #f7fafc;
+            border-radius: 10px;
+            margin: 20px 0;
+        }
+
+        .demo-section p {
+            font-size: 1.2rem;
+            color: #718096;
+            margin-bottom: 10px;
+        }
+
+        .demo-section .arrow {
+            font-size: 2rem;
+            animation: bounce 1s infinite;
+        }
+
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(10px); }
+        }
+
+        @media (max-width: 600px) {
+            .header h1 { font-size: 1.8rem; }
+            .card { padding: 20px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🧠 Knowledge Brain Chat Widget</h1>
+            <p>Add an AI-powered knowledge base chatbot to your website in 60 seconds</p>
+        </div>
+
+        <!-- Demo Notice -->
+        <div class="card">
+            <div class="demo-section">
+                <p>👋 <strong>Try it now!</strong> Click the chat button in the bottom-right corner</p>
+                <div class="arrow">👇</div>
+            </div>
+        </div>
+
+        <!-- Quick Start -->
+        <div class="card">
+            <h2>🚀 Quick Start</h2>
+            <p>Add this single line to your website's <code>&lt;head&gt;</code> or before <code>&lt;/body&gt;</code>:</p>
+            <div class="code-block">
+                <code>&lt;script src="https://YOUR_VERCEL_URL.vercel.app/widget.js"&gt;&lt;/script&gt;</code>
+            </div>
+            <p>That's it! The chat widget will automatically appear on your site.</p>
+        </div>
+
+        <!-- Customization -->
+        <div class="card">
+            <h2>🎨 Customization</h2>
+            <p>You can customize the widget by adding these variables BEFORE the script tag:</p>
+            <div class="code-block">
+<code>&lt;script&gt;
+    window.CHATBOT_API_URL = 'https://your-api.vercel.app';
+    window.CHATBOT_NAME = 'My Support Bot';
+    window.CHATBOT_AVATAR = '🤖';
+    window.CHATBOT_COLOR = '#ff6b6b';
+    window.CHATBOT_GREETING = 'Hey! How can I help you today?';
+&lt;/script&gt;
+&lt;script src="https://YOUR_VERCEL_URL.vercel.app/widget.js"&gt;&lt;/script&gt;</code>
+            </div>
+
+            <h3>Available Options</h3>
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <div class="icon">🔗</div>
+                    <h4>CHATBOT_API_URL</h4>
+                    <p>Your Vercel deployment URL</p>
+                </div>
+                <div class="feature-item">
+                    <div class="icon">📝</div>
+                    <h4>CHATBOT_NAME</h4>
+                    <p>Bot name in header</p>
+                </div>
+                <div class="feature-item">
+                    <div class="icon">🎭</div>
+                    <h4>CHATBOT_AVATAR</h4>
+                    <p>Emoji or image URL</p>
+                </div>
+                <div class="feature-item">
+                    <div class="icon">🎨</div>
+                    <h4>CHATBOT_COLOR</h4>
+                    <p>Primary accent color</p>
+                </div>
+                <div class="feature-item">
+                    <div class="icon">💬</div>
+                    <h4>CHATBOT_GREETING</h4>
+                    <p>Welcome message</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Features -->
+        <div class="card">
+            <h2>✨ Features</h2>
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <div class="icon">📄</div>
+                    <h4>Document Q&A</h4>
+                    <p>Answers from your knowledge base</p>
+                </div>
+                <div class="feature-item">
+                    <div class="icon">💾</div>
+                    <h4>Memory</h4>
+                    <p>Remembers conversation context</p>
+                </div>
+                <div class="feature-item">
+                    <div class="icon">📱</div>
+                    <h4>Responsive</h4>
+                    <p>Works on all devices</p>
+                </div>
+                <div class="feature-item">
+                    <div class="icon">🎯</div>
+                    <h4>Source Citing</h4>
+                    <p>Shows document sources</p>
+                </div>
+                <div class="feature-item">
+                    <div class="icon">🔒</div>
+                    <h4>Secure</h4>
+                    <p>API keys on server only</p>
+                </div>
+                <div class="feature-item">
+                    <div class="icon">⚡</div>
+                    <h4>Fast</h4>
+                    <p>Powered by Groq + Pinecone</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Integration Steps -->
+        <div class="card">
+            <h2>📋 Integration Steps</h2>
+            <ol class="steps">
+                <li>
+                    <strong>Deploy your chatbot</strong> on Vercel (you already did this!)
+                </li>
+                <li>
+                    <strong>Copy the script tag</strong> from the Quick Start section above
+                </li>
+                <li>
+                    <strong>Paste it</strong> into your website's HTML before <code>&lt;/body&gt;</code>
+                </li>
+                <li>
+                    <strong>Refresh</strong> your website — the chat bubble appears!
+                </li>
+                <li>
+                    <strong>Customize</strong> using the options above (optional)
+                </li>
+            </ol>
+        </div>
+
+        <!-- Tech Stack -->
+        <div class="card">
+            <h2>🛠️ Tech Stack</h2>
+            <p>
+                <span class="badge">Python</span>
+                <span class="badge">Flask</span>
+                <span class="badge">LangChain</span>
+                <span class="badge">Pinecone</span>
+                <span class="badge">Groq LLM</span>
+                <span class="badge">Vercel</span>
+                <span class="badge">JavaScript</span>
+            </p>
+        </div>
+
+        <!-- Footer -->
+        <div style="text-align: center; color: white; opacity: 0.7; padding: 20px;">
+            <p>Built with ❤️ | Free & Open Source</p>
+        </div>
+    </div>
+
+    <!-- ============================================ -->
+    <!-- CHAT WIDGET - Replace with your Vercel URL    -->
+    <!-- ============================================ -->
+    <script>
+        window.CHATBOT_API_URL = 'https://YOUR_VERCEL_URL.vercel.app';
+        window.CHATBOT_NAME = 'Knowledge Bot';
+        window.CHATBOT_AVATAR = '🧠';
+        window.CHATBOT_COLOR = '#533483';
+        window.CHATBOT_GREETING = 'Hello! Ask me anything about the knowledge base.';
+    </script>
+    <script src="./widget.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "builds": [
+    {
+      "src": "app.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/widget.js",
+      "dest": "/static/widget.js"
+    },
+    {
+      "src": "/widget-demo",
+      "dest": "/static/widget-demo.html"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "app.py"
+    }
+  ]
+}

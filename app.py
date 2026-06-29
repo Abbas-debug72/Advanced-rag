@@ -214,6 +214,15 @@ def clear_conversation(session_id):
     session_focus.pop(session_id, None)
     return jsonify({"success": True})
 
+@app.route("/widget.js")
+def serve_widget():
+    return app.send_static_file("widget.js")
+
+@app.route("/widget-demo")
+def widget_demo():
+    return app.send_static_file("widget-demo.html")
+
+
 if __name__ == "__main__":
     print("\n🚀 Pinecone RAG Chatbot: http://127.0.0.1:5000")
     app.run(debug=False, host="127.0.0.1", port=5000)
