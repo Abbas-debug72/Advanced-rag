@@ -4,7 +4,11 @@
     { "source": "/widget-demo", "destination": "/api/widget-demo" },
     { "source": "/(.*)", "destination": "/api/index" }
   ],
-   "env": {
-    "INGEST_ON_START": "true"
+  "env": {
+    "PINECONE_API_KEY": "@pinecone_api_key",
+    "PINECONE_INDEX_HOST": "@pinecone_index_host",
+    "GROQ_API_KEY": "@groq_api_key",
+    "PINECONE_INDEX_NAME": "knowledge-brain",
+    "GROQ_CHAT_MODEL": "mixtral-8x7b-32768"
   }
 }

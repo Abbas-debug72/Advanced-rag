@@ -1,10 +1,10 @@
 flask
 python-dotenv
+pinecone
+groq
+requests
 langchain
 langchain-core
-langchain-groq
 langchain-community
 langchain-text-splitters
 pypdf
-pinecone
-requests
