@@ -1,7 +1,7 @@
 {
   "rewrites": [
-    { "source": "/widget.js", "destination": "/api/widget" },
-    { "source": "/widget-demo", "destination": "/api/widget-demo" },
+    { "source": "/widget.js", "destination": "/api/index" },
+    { "source": "/widget-demo", "destination": "/api/index" },
     { "source": "/(.*)", "destination": "/api/index" }
   ]
 }
