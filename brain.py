@@ -1,4 +1,4 @@
-# brain.py – Vercel-Optimized (Pinecone Embeddings, 384-dim) - COMPLETE
+# brain.py – Vercel-Optimized (Groq Embeddings, 1536-dim) - UPDATED
 import os
 import re
 import json
@@ -12,10 +12,11 @@ from pinecone import Pinecone
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
+from groq import Groq
 
 
 class KnowledgeBrain:
-    """Universal knowledge engine – Zero local ML dependencies."""
+    """Universal knowledge engine – Uses Groq for embeddings."""
 
     def __init__(
         self,
@@ -27,7 +28,11 @@ class KnowledgeBrain:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
 
-        print("📥 Using Pinecone inference embeddings (384-dim)")
+        print("📥 Using Groq for embeddings (text-embedding-3-small, 1536-dim)")
+
+        # Groq setup
+        self.groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+        self.embedding_model = os.getenv("GROQ_EMBEDDING_MODEL", "text-embedding-3-small")
 
         # Pinecone setup
         self.api_key = os.getenv("PINECONE_API_KEY")
@@ -45,44 +50,34 @@ class KnowledgeBrain:
               f"{stats['total_chunks']} chunks\n")
 
     # ------------------------------------------------------------------
-    # EMBEDDING METHODS
+    # EMBEDDING METHODS USING GROQ
     # ------------------------------------------------------------------
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
-        url = f"https://{self.index_host}/embeddings"
-        headers = {"Api-Key": self.api_key, "Content-Type": "application/json"}
+        """Get embeddings using Groq API"""
         embeddings = []
         for text in texts:
-            payload = {
-                "model": "multilingual-e5-large",
-                "parameters": {"input_type": "passage"},
-                "inputs": [text[:8000]]
-            }
             try:
-                response = requests.post(url, json=payload, headers=headers)
-                response.raise_for_status()
-                data = response.json()
-                embeddings.append(data["data"][0]["values"])
+                response = self.groq_client.embeddings.create(
+                    model=self.embedding_model,
+                    input=text[:8000]  # Limit text length
+                )
+                embeddings.append(response.data[0].embedding)
             except Exception as e:
                 print(f"⚠️  Embedding error: {e}")
-                embeddings.append([0.0] * 384)
+                embeddings.append([0.0] * 1536)  # 1536-dim for Groq
         return embeddings
 
     def embed_query(self, query: str) -> List[float]:
-        url = f"https://{self.index_host}/embeddings"
-        headers = {"Api-Key": self.api_key, "Content-Type": "application/json"}
-        payload = {
-            "model": "multilingual-e5-large",
-            "parameters": {"input_type": "query"},
-            "inputs": [query[:8000]]
-        }
+        """Get query embedding using Groq API"""
         try:
-            response = requests.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            return data["data"][0]["values"]
+            response = self.groq_client.embeddings.create(
+                model=self.embedding_model,
+                input=query[:8000]
+            )
+            return response.data[0].embedding
         except Exception as e:
             print(f"⚠️  Query embedding error: {e}")
-            return [0.0] * 384
+            return [0.0] * 1536
 
     # ------------------------------------------------------------------
     # METADATA
@@ -116,7 +111,7 @@ class KnowledgeBrain:
         return summaries
 
     def _get_chunks_for_file(self, filename: str, limit: int = 30) -> List[Document]:
-        dummy = [0.0] * 384
+        dummy = [0.0] * 1536  # 1536-dim for Groq
         results = self.index.query(
             vector=dummy, filter={"source_file": filename},
             top_k=limit, include_metadata=True
@@ -266,7 +261,7 @@ class KnowledgeBrain:
         return result[:k]
 
     # ------------------------------------------------------------------
-    # SCORING (simplified but functional)
+    # SCORING
     # ------------------------------------------------------------------
     def _analyze_query(self, query: str) -> dict:
         q = re.sub(r'[?.,!;:()"\'*]', ' ', query).strip().lower()

@@ -1,18 +1,17 @@
 """
 RAG Chatbot with Groq API, Pinecone, and Auto-Ingestion
-Deployable on Vercel - COMPLETE FIXED VERSION WITH WIDGET SUPPORT
+Deployable on Vercel - USING GROQ FOR EMBEDDINGS
 """
 
 import os
 import sys
 import logging
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from pinecone import Pinecone
 from groq import Groq
 from typing import List, Dict, Any
 from functools import lru_cache
-import requests
 import time
 
 # Force flush for Vercel logs
@@ -53,14 +52,17 @@ def handle_options(path=None):
 # ===== CONFIGURATION =====
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_HOST = os.getenv("PINECONE_INDEX_HOST")
-PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "knowledge-brain")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "knowledge-brain-groq")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "mixtral-8x7b-32768")
+GROQ_EMBEDDING_MODEL = os.getenv("GROQ_EMBEDDING_MODEL", "text-embedding-3-small")
 
 print(f"🔧 FINAL CONFIG:", flush=True)
 print(f"   PINECONE_API_KEY: {'✅ SET' if PINECONE_API_KEY else '❌ MISSING'}", flush=True)
 print(f"   PINECONE_INDEX_HOST: {PINECONE_INDEX_HOST}", flush=True)
+print(f"   PINECONE_INDEX_NAME: {PINECONE_INDEX_NAME}", flush=True)
 print(f"   GROQ_API_KEY: {'✅ SET' if GROQ_API_KEY else '❌ MISSING'}", flush=True)
+print(f"   GROQ_EMBEDDING_MODEL: {GROQ_EMBEDDING_MODEL}", flush=True)
 
 # ===== GLOBAL STATE =====
 _pinecone_index = None
@@ -88,6 +90,8 @@ def initialize_clients():
         if groq_key:
             _groq_client = Groq(api_key=groq_key)
             print("✅ Groq client initialized successfully", flush=True)
+            
+            # Test Groq connection
             try:
                 test_response = _groq_client.chat.completions.create(
                     model=GROQ_CHAT_MODEL,
@@ -142,40 +146,22 @@ def initialize_clients():
     print(f"   Groq: {'✅ Connected' if _groq_client else '❌ Failed'}", flush=True)
     print("=" * 60, flush=True)
 
-# ===== GROQ FUNCTIONS =====
+# ===== EMBEDDING FUNCTION USING GROQ =====
 @lru_cache(maxsize=100)
 def get_embedding(text: str) -> List[float]:
-    """Get embedding using Pinecone's inference API (384-dim)"""
-    global _pinecone_index
+    """Get embedding using Groq API"""
+    global _groq_client
     
-    if _pinecone_index is None:
-        raise Exception("Pinecone index not available")
+    if _groq_client is None:
+        raise Exception("Groq client not initialized")
     
     try:
-        host_url = PINECONE_INDEX_HOST
-        if not host_url.startswith('https://'):
-            host_url = f'https://{host_url}'
-        
-        url = f"{host_url}/embeddings"
-        headers = {
-            "Api-Key": PINECONE_API_KEY,
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": "multilingual-e5-large",
-            "parameters": {"input_type": "passage"},
-            "inputs": [text[:8000]]
-        }
-        
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        
-        if 'data' in data and len(data['data']) > 0:
-            return data["data"][0]["values"]
-        else:
-            raise Exception("No embedding returned")
-            
+        # Groq embeddings API call
+        response = _groq_client.embeddings.create(
+            model=GROQ_EMBEDDING_MODEL,
+            input=text
+        )
+        return response.data[0].embedding
     except Exception as e:
         logger.error(f"Embedding error: {e}")
         raise
@@ -188,6 +174,7 @@ def query_pinecone(query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         raise Exception("Pinecone index not available")
     
     try:
+        # Get query embedding using Groq
         query_embedding = get_embedding(query)
         
         results = _pinecone_index.query(
@@ -263,16 +250,14 @@ def check_documents_exist() -> Dict[str, Any]:
 def serve_widget():
     """Serve the widget JavaScript file"""
     try:
-        # Try to read the widget.js file from the current directory
         widget_path = os.path.join(os.path.dirname(__file__), 'widget.js')
         if os.path.exists(widget_path):
             with open(widget_path, 'r') as f:
                 content = f.read()
             return content, 200, {'Content-Type': 'application/javascript'}
         else:
-            # If file doesn't exist, return the widget code inline
-            widget_code = """
-// Chat Widget v1.0 - Knowledge Brain Chatbot
+            # Return inline widget code if file doesn't exist
+            return """// Chat Widget - Inline Version
 (function() {
     const CONFIG = {
         apiUrl: window.CHATBOT_API_URL || window.location.origin,
@@ -282,15 +267,9 @@ def serve_widget():
         greeting: window.CHATBOT_GREETING || 'Hello! Ask me anything about our documents.',
     };
 
-    let sessionId = localStorage.getItem('chatbot_session') || generateSessionId();
+    let sessionId = localStorage.getItem('chatbot_session') || 'session_' + Date.now();
     let isOpen = false;
     let isLoading = false;
-
-    function generateSessionId() {
-        const id = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-        localStorage.setItem('chatbot_session', id);
-        return id;
-    }
 
     function createWidget() {
         const widget = document.createElement('div');
@@ -336,8 +315,8 @@ def serve_widget():
                     flex: 1; overflow-y: auto; padding: 16px;
                     display: flex; flex-direction: column; gap: 12px;
                 }
-                .chatbot-message { display: flex; gap: 8px; max-width: 85%; animation: chatbotFadeIn 0.3s; }
-                @keyframes chatbotFadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+                .chatbot-message { display: flex; gap: 8px; max-width: 85%; animation: fadeIn 0.3s; }
+                @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
                 .chatbot-message.user { align-self: flex-end; flex-direction: row-reverse; }
                 .chatbot-avatar {
                     width: 30px; height: 30px; border-radius: 50%;
@@ -373,11 +352,11 @@ def serve_widget():
                 .chatbot-typing span {
                     width: 8px; height: 8px; border-radius: 50%;
                     background: ${CONFIG.primaryColor};
-                    animation: chatbotBounce 1.4s infinite;
+                    animation: bounce 1.4s infinite;
                 }
                 .chatbot-typing span:nth-child(2) { animation-delay: 0.2s; }
                 .chatbot-typing span:nth-child(3) { animation-delay: 0.4s; }
-                @keyframes chatbotBounce { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-6px); } }
+                @keyframes bounce { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-6px); } }
                 @media (max-width: 480px) {
                     .chatbot-window { width: 100%; height: 100%; bottom: 0; right: 0; border-radius: 0; }
                 }
@@ -437,7 +416,6 @@ def serve_widget():
     async function clearChat() {
         try {
             await fetch(`${CONFIG.apiUrl}/api/conversation/${sessionId}`, { method: 'DELETE' });
-            sessionId = generateSessionId();
         } catch(e) {}
         document.getElementById('chatbot-messages').innerHTML = `
             <div class="chatbot-message bot">
@@ -453,7 +431,7 @@ def serve_widget():
         div.className = `chatbot-message ${role}`;
         let html = `<div class="chatbot-avatar">${role === 'user' ? '👤' : CONFIG.botAvatar}</div>`;
         html += `<div class="chatbot-message-content">${text.replace(/\\n/g, '<br>')}`;
-        if (sources.length > 0) {
+        if (sources && sources.length > 0) {
             html += '<div class="chatbot-sources">';
             const seen = new Set();
             sources.forEach(s => {
@@ -523,9 +501,7 @@ def serve_widget():
     } else {
         createWidget();
     }
-})();
-"""
-            return widget_code, 200, {'Content-Type': 'application/javascript'}
+})();""", 200, {'Content-Type': 'application/javascript'}
     except Exception as e:
         logger.error(f"Error serving widget: {e}")
         return f"Error: {str(e)}", 500
@@ -533,15 +509,7 @@ def serve_widget():
 @app.route('/widget-demo')
 def widget_demo():
     """Serve the widget demo page"""
-    try:
-        demo_path = os.path.join(os.path.dirname(__file__), 'widget-demo.html')
-        if os.path.exists(demo_path):
-            with open(demo_path, 'r') as f:
-                content = f.read()
-            return content, 200, {'Content-Type': 'text/html'}
-        else:
-            # Return a simple demo if file doesn't exist
-            return """
+    return """
 <!DOCTYPE html>
 <html>
 <head><title>Chat Widget Demo</title></head>
@@ -559,25 +527,14 @@ def widget_demo():
 </body>
 </html>
 """, 200, {'Content-Type': 'text/html'}
-    except Exception as e:
-        return f"Error: {str(e)}", 500
 
 # ===== API ROUTES =====
 
 @app.route('/')
 def home():
     """Serve the main HTML page"""
-    try:
-        # Try to serve index.html if it exists
-        index_path = os.path.join(os.path.dirname(__file__), 'index.html')
-        if os.path.exists(index_path):
-            with open(index_path, 'r') as f:
-                content = f.read()
-            return content, 200, {'Content-Type': 'text/html'}
-        else:
-            # Return a beautiful status page
-            doc_status = check_documents_exist()
-            return f"""
+    doc_status = check_documents_exist()
+    return f"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -626,6 +583,7 @@ def home():
             <div class="feature">📚 {doc_status.get('vector_count', 0)} Document Chunks Loaded</div>
             <div class="feature">🔗 Pinecone Vector Database Connected</div>
             <div class="feature">🤖 Groq LLM Ready</div>
+            <div class="feature">📊 Using Groq for Embeddings</div>
         </div>
         <p style="color: #94a3b8; margin-top: 20px;">
             Click the chat bubble in the bottom-right corner to start asking questions!
@@ -647,8 +605,6 @@ def home():
 </body>
 </html>
 """
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -666,8 +622,6 @@ def health_check():
 @app.route('/api/debug', methods=['GET'])
 def debug_info():
     """Debug endpoint to check environment variables and connections"""
-    import os
-    
     env_status = {
         'PINECONE_API_KEY': {
             'exists': bool(os.getenv('PINECONE_API_KEY')),
@@ -677,12 +631,15 @@ def debug_info():
             'exists': bool(os.getenv('PINECONE_INDEX_HOST')),
             'value': os.getenv('PINECONE_INDEX_HOST', 'NOT SET')
         },
+        'PINECONE_INDEX_NAME': {
+            'value': os.getenv('PINECONE_INDEX_NAME', 'knowledge-brain-groq')
+        },
         'GROQ_API_KEY': {
             'exists': bool(os.getenv('GROQ_API_KEY')),
             'length': len(os.getenv('GROQ_API_KEY', '')) if os.getenv('GROQ_API_KEY') else 0,
         },
-        'PINECONE_INDEX_NAME': {
-            'value': os.getenv('PINECONE_INDEX_NAME', 'knowledge-brain')
+        'GROQ_EMBEDDING_MODEL': {
+            'value': os.getenv('GROQ_EMBEDDING_MODEL', 'text-embedding-3-small')
         },
         'GROQ_CHAT_MODEL': {
             'value': os.getenv('GROQ_CHAT_MODEL', 'mixtral-8x7b-32768')
@@ -746,7 +703,9 @@ def get_stats():
             'total_chunks': vector_count,
             'connected': True,
             'vector_count': vector_count,
-            'index_name': PINECONE_INDEX_NAME
+            'index_name': PINECONE_INDEX_NAME,
+            'embedding_model': GROQ_EMBEDDING_MODEL,
+            'chat_model': GROQ_CHAT_MODEL
         })
     except Exception as e:
         return jsonify({

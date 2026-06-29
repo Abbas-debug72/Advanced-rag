@@ -7,8 +7,8 @@ from pinecone import Pinecone, ServerlessSpec
 
 # --- Configuration (read from .env or set defaults) ---
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "knowledge-brain")
-DIMENSIONS = 384          # must match embedding model (BGE-small = 384)
+INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "knowledge-brain-groq")  # Updated default name
+DIMENSIONS = 1536  # Updated for Groq embeddings (text-embedding-3-small)
 METRIC = "cosine"
 CLOUD = os.getenv("PINECONE_CLOUD", "aws")
 REGION = os.getenv("PINECONE_REGION", "us-east-1")
@@ -31,6 +31,19 @@ if INDEX_NAME not in existing_indexes:
             region=REGION
         )
     )
-    print(f"✅ Index '{INDEX_NAME}' created successfully (dim={DIMENSIONS}, {METRIC}).")
+    print(f"✅ Index '{INDEX_NAME}' created successfully (dim={DIMENSIONS}, metric={METRIC}).")
+    print(f"   Cloud: {CLOUD}, Region: {REGION}")
 else:
     print(f"⚠️  Index '{INDEX_NAME}' already exists. No action taken.")
+    print(f"   Existing index details will be used.")
+
+# --- Display index information ---
+try:
+    index = pc.Index(host=INDEX_NAME)
+    stats = index.describe_index_stats()
+    print(f"\n📊 Index Stats:")
+    print(f"   Total vectors: {stats.get('total_vector_count', 0)}")
+    print(f"   Dimension: {stats.get('dimension', 'N/A')}")
+    print(f"   Metric: {stats.get('metric', 'N/A')}")
+except Exception as e:
+    print(f"⚠️  Could not fetch index stats: {e}")
