@@ -1,8 +1,10 @@
+# app.py – Complete Working Version with Fixed Widget
 from dotenv import load_dotenv
 load_dotenv()
 
 import os
 from flask import Flask, request, jsonify, Response
+from flask_cors import CORS
 
 from brain import KnowledgeBrain
 from langchain_groq import ChatGroq
@@ -10,6 +12,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 app = Flask(__name__)
+CORS(app)
 
 print("🧠 Loading Knowledge Brain...")
 brain = KnowledgeBrain(pdf_directory=os.getenv("PDF_DIRECTORY", "./pdfs"))
@@ -33,7 +36,7 @@ def format_docs(docs):
     return "\n".join(parts)
 
 # ============================================================
-# MAIN PAGE WITH WORKING CHAT INTERFACE
+# MAIN PAGE WITH CHAT INTERFACE
 # ============================================================
 @app.route("/")
 def index():
@@ -144,7 +147,7 @@ def index():
                 font-size: 0.7rem;
                 color: #a0aec0;
             }
-            .loading {
+            .loading-text {
                 color: #a0aec0;
                 font-style: italic;
                 padding: 10px;
@@ -190,7 +193,7 @@ def index():
                 var div = document.createElement('div');
                 div.className = 'msg bot';
                 div.id = 'loading';
-                div.innerHTML = '<div class="avatar">🧠</div><div class="text"><div class="loading">Thinking...</div></div>';
+                div.innerHTML = '<div class="avatar">🧠</div><div class="text"><div class="loading-text">Thinking...</div></div>';
                 document.getElementById('messages').appendChild(div);
                 document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
             }
@@ -231,22 +234,23 @@ def index():
     """
 
 # ============================================================
-# WIDGET (for embedding on other websites)
+# WIDGET JAVASCRIPT (FIXED - Always calls your Vercel API)
 # ============================================================
 @app.route("/widget.js")
 def widget():
     js = """
     (function(){
-        var api = window.CHATBOT_API_URL || window.location.origin;
+        // FIXED: Always use your Vercel URL, not the embedding site's URL
+        var api = 'https://advanced-6jxkyhxli-gat6.vercel.app';
         
         var btn = document.createElement('button');
         btn.innerHTML = '🧠';
-        btn.style.cssText = 'position:fixed;bottom:20px;right:20px;width:60px;height:60px;border-radius:50%;background:#533483;color:white;border:none;cursor:pointer;font-size:28px;z-index:99999;box-shadow:0 4px 20px rgba(0,0,0,0.3);';
+        btn.style.cssText = 'position:fixed;bottom:20px;right:20px;width:60px;height:60px;border-radius:50%;background:#533483;color:white;border:none;cursor:pointer;font-size:28px;z-index:99999;box-shadow:0 4px 20px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;';
         
         var win = document.createElement('div');
         win.style.cssText = 'position:fixed;bottom:90px;right:20px;width:380px;height:500px;background:#16213e;border-radius:16px;z-index:99999;display:none;flex-direction:column;overflow:hidden;font-family:sans-serif;box-shadow:0 8px 40px rgba(0,0,0,0.4);';
         
-        win.innerHTML = '<div style="background:linear-gradient(135deg,#0f3460,#533483);color:white;padding:16px;font-weight:bold;">🧠 Knowledge Bot</div>' +
+        win.innerHTML = '<div style="background:linear-gradient(135deg,#0f3460,#533483);color:white;padding:16px;font-weight:bold;display:flex;justify-content:space-between;align-items:center;">🧠 Knowledge Bot<span id="cw-close" style="cursor:pointer;font-size:18px;">✕</span></div>' +
             '<div id="cw-msgs" style="flex:1;overflow-y:auto;padding:16px;"><div style="color:white;font-size:14px;">Hello! Ask me anything.</div></div>' +
             '<div style="display:flex;padding:12px;border-top:1px solid #1a1a3e;gap:8px;">' +
             '<input id="cw-inp" placeholder="Ask a question..." style="flex:1;padding:10px;border:none;border-radius:20px;background:#1a1a3e;color:white;font-size:14px;outline:none;">' +
@@ -259,14 +263,19 @@ def widget():
         var loading = false;
         
         btn.onclick = function(){
-            win.style.display = win.style.display === 'flex' ? 'none' : 'flex';
-            btn.style.display = win.style.display === 'flex' ? 'none' : 'block';
-            if(win.style.display === 'flex') document.getElementById('cw-inp').focus();
+            win.style.display = 'flex';
+            btn.style.display = 'none';
+            document.getElementById('cw-inp').focus();
+        };
+        
+        document.getElementById('cw-close').onclick = function(){
+            win.style.display = 'none';
+            btn.style.display = 'flex';
         };
         
         function addMsg(text, role) {
             var d = document.createElement('div');
-            d.style.cssText = 'padding:8px 12px;margin:4px 0;border-radius:10px;font-size:13px;color:white;max-width:85%;' + (role==='user'?'background:#533483;margin-left:auto;':'background:#1a1a3e;');
+            d.style.cssText = 'padding:8px 12px;margin:4px 0;border-radius:10px;font-size:13px;color:white;max-width:85%;word-wrap:break-word;' + (role==='user'?'background:#533483;margin-left:auto;':'background:#1a1a3e;');
             d.textContent = text;
             document.getElementById('cw-msgs').appendChild(d);
             document.getElementById('cw-msgs').scrollTop = document.getElementById('cw-msgs').scrollHeight;
@@ -288,7 +297,7 @@ def widget():
                 var d = await r.json();
                 addMsg(d.answer||'Error', 'bot');
             } catch(e) {
-                addMsg('Connection error', 'bot');
+                addMsg('Connection error. Please try again.', 'bot');
             }
             loading = false;
         }
@@ -296,7 +305,7 @@ def widget():
         document.getElementById('cw-send').onclick = send;
         document.getElementById('cw-inp').addEventListener('keypress', function(e){ if(e.key==='Enter') send(); });
         
-        console.log('✅ Chat widget loaded!');
+        console.log('✅ Chat widget ready! API: ' + api);
     })();
     """
     return Response(js, mimetype='application/javascript')
