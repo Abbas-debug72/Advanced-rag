@@ -1,22 +1,7 @@
 {
-  "builds": [
-    {
-      "src": "app.py",
-      "use": "@vercel/python"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/widget.js",
-      "dest": "/static/widget.js"
-    },
-    {
-      "src": "/widget-demo",
-      "dest": "/static/widget-demo.html"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "app.py"
-    }
+  "rewrites": [
+    { "source": "/widget.js", "destination": "/api/widget" },
+    { "source": "/widget-demo", "destination": "/api/widget-demo" },
+    { "source": "/(.*)", "destination": "/api/index" }
   ]
 }
