@@ -1,7 +1,8 @@
-# brain.py – Vercel-Optimized (Pinecone Built-in Embeddings, No Local ML)
+# brain.py – Vercel-Optimized (Pinecone Embeddings, 384-dim)
 import os
 import re
 import json
+import requests
 from pathlib import Path
 from typing import Dict, List
 from datetime import datetime
@@ -26,7 +27,7 @@ class KnowledgeBrain:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
 
-        print("📥 Using Pinecone built-in embeddings (no local model)")
+        print("📥 Using Pinecone inference embeddings (384-dim)")
 
         # Pinecone setup
         self.api_key = os.getenv("PINECONE_API_KEY")
@@ -44,25 +45,56 @@ class KnowledgeBrain:
               f"{stats['total_chunks']} chunks\n")
 
     # ------------------------------------------------------------------
-    # EMBEDDING METHODS (Pinecone Inference API)
+    # EMBEDDING METHODS (Pinecone REST API – 384-dim model)
     # ------------------------------------------------------------------
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
-        """Embed documents using Pinecone's built-in inference."""
-        embeddings = self.pc.inference.embed(
-            model="llama-text-embed-v2",
-            inputs=texts,
-            parameters={"input_type": "passage"}
-        )
-        return [e.values for e in embeddings]
+        """Embed documents using Pinecone's built-in inference (384-dim)."""
+        url = "https://api.pinecone.io/embed"
+        headers = {
+            "Api-Key": self.api_key,
+            "Content-Type": "application/json"
+        }
+        
+        embeddings = []
+        for text in texts:
+            payload = {
+                "model": "multilingual-e5-large",
+                "parameters": {"input_type": "passage"},
+                "inputs": [text]
+            }
+            try:
+                response = requests.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                embeddings.append(data["data"][0]["values"])
+            except Exception as e:
+                print(f"⚠️  Embedding error: {e}")
+                embeddings.append([0.0] * 384)
+        
+        return embeddings
 
     def embed_query(self, query: str) -> List[float]:
         """Embed a single query."""
-        result = self.pc.inference.embed(
-            model="llama-text-embed-v2",
-            inputs=[query],
-            parameters={"input_type": "query"}
-        )
-        return result[0].values
+        url = "https://api.pinecone.io/embed"
+        headers = {
+            "Api-Key": self.api_key,
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "multilingual-e5-large",
+            "parameters": {"input_type": "query"},
+            "inputs": [query]
+        }
+        
+        try:
+            response = requests.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            return data["data"][0]["values"]
+        except Exception as e:
+            print(f"⚠️  Query embedding error: {e}")
+            return [0.0] * 384
 
     # ------------------------------------------------------------------
     # METADATA
