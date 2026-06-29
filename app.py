@@ -20,9 +20,17 @@ sys.stdout.flush()
 
 print("🚀 Starting Flask app...", flush=True)
 
-# Load environment variables
-load_dotenv()
-print("✅ Environment variables loaded", flush=True)
+# ===== FORCE LOAD ENVIRONMENT VARIABLES =====
+# Try multiple ways to load .env
+load_dotenv()  # Try current directory
+load_dotenv('.env.production')  # Try production env file
+load_dotenv('/var/task/.env')  # Try Vercel's working directory
+
+# Also check if we're in Vercel and environment variables are set
+print("📌 Checking environment variables...", flush=True)
+print(f"   PINECONE_API_KEY: {'✅ SET' if os.getenv('PINECONE_API_KEY') else '❌ MISSING'}", flush=True)
+print(f"   PINECONE_INDEX_HOST: {'✅ SET' if os.getenv('PINECONE_INDEX_HOST') else '❌ MISSING'}", flush=True)
+print(f"   GROQ_API_KEY: {'✅ SET' if os.getenv('GROQ_API_KEY') else '❌ MISSING'}", flush=True)
 
 # ===== LOGGING =====
 logging.basicConfig(level=logging.INFO)
@@ -44,7 +52,7 @@ def add_cors_headers(response):
 def handle_options(path=None):
     return '', 200
 
-# ===== CONFIGURATION =====
+# ===== CONFIGURATION - READ FROM ENV =====
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_HOST = os.getenv("PINECONE_INDEX_HOST")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "knowledge-brain")
@@ -52,11 +60,10 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "mixtral-8x7b-32768")
 PDF_DIRECTORY = os.getenv("PDF_DIRECTORY", "./pdfs")
 
-print(f"🔧 CONFIG:", flush=True)
-print(f"   PINECONE_INDEX_NAME: {PINECONE_INDEX_NAME}", flush=True)
+print(f"🔧 FINAL CONFIG:", flush=True)
+print(f"   PINECONE_API_KEY: {'✅ SET' if PINECONE_API_KEY else '❌ MISSING'}", flush=True)
 print(f"   PINECONE_INDEX_HOST: {PINECONE_INDEX_HOST}", flush=True)
-print(f"   GROQ_CHAT_MODEL: {GROQ_CHAT_MODEL}", flush=True)
-print(f"   PDF_DIRECTORY: {PDF_DIRECTORY}", flush=True)
+print(f"   GROQ_API_KEY: {'✅ SET' if GROQ_API_KEY else '❌ MISSING'}", flush=True)
 
 # ===== GLOBAL STATE =====
 _pinecone_index = None
@@ -71,7 +78,7 @@ def initialize_clients():
     print("🔧 INITIALIZING CLIENTS...", flush=True)
     print("=" * 60, flush=True)
     
-    # Check environment variables
+    # Re-read environment variables (they might have been set after import)
     pinecone_key = os.getenv("PINECONE_API_KEY")
     pinecone_host = os.getenv("PINECONE_INDEX_HOST")
     groq_key = os.getenv("GROQ_API_KEY")
@@ -88,7 +95,6 @@ def initialize_clients():
             
             # Test Groq connection
             try:
-                # Simple test to verify API key works
                 test_response = _groq_client.chat.completions.create(
                     model=GROQ_CHAT_MODEL,
                     messages=[{"role": "user", "content": "Say 'Hello'"}],
@@ -110,6 +116,7 @@ def initialize_clients():
     try:
         if pinecone_key and pinecone_host:
             print("🔄 Connecting to Pinecone...", flush=True)
+            print(f"   Host: {pinecone_host}", flush=True)
             pc = Pinecone(api_key=pinecone_key)
             _pinecone_index = pc.Index(host=pinecone_host)
             print(f"✅ Pinecone index connected successfully", flush=True)
@@ -154,7 +161,6 @@ def get_embedding(text: str) -> List[float]:
     
     try:
         # Use Pinecone's inference API for embeddings
-        # Extract host from index host
         host_url = PINECONE_INDEX_HOST
         if not host_url.startswith('https://'):
             host_url = f'https://{host_url}'
@@ -167,9 +173,10 @@ def get_embedding(text: str) -> List[float]:
         payload = {
             "model": "multilingual-e5-large",
             "parameters": {"input_type": "passage"},
-            "inputs": [text[:8000]]  # Limit text length
+            "inputs": [text[:8000]]
         }
         
+        print(f"📤 Getting embedding for text length: {len(text)}", flush=True)
         response = requests.post(url, json=payload, headers=headers, timeout=30)
         response.raise_for_status()
         data = response.json()
@@ -191,7 +198,6 @@ def query_pinecone(query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         raise Exception("Pinecone index not available")
     
     try:
-        # Get query embedding
         query_embedding = get_embedding(query)
         
         results = _pinecone_index.query(
@@ -318,9 +324,6 @@ def debug_info():
         },
         'GROQ_CHAT_MODEL': {
             'value': os.getenv('GROQ_CHAT_MODEL', 'mixtral-8x7b-32768')
-        },
-        'PDF_DIRECTORY': {
-            'value': os.getenv('PDF_DIRECTORY', './pdfs')
         }
     }
     
@@ -342,7 +345,6 @@ def debug_info():
     
     if _groq_client is not None:
         try:
-            # Test Groq with a simple request
             test_response = _groq_client.chat.completions.create(
                 model=GROQ_CHAT_MODEL,
                 messages=[{"role": "user", "content": "Hi"}],
@@ -358,49 +360,10 @@ def debug_info():
         'environment_variables': env_status,
         'pinecone_status': pinecone_status,
         'groq_status': groq_status,
-        'all_env_keys': [k for k in os.environ.keys() if not k.startswith('_')],
+        'all_env_keys': [k for k in os.environ.keys() if not k.startswith('_') and not k.startswith('PYTHON')],
         'has_pinecone_key': bool(os.getenv('PINECONE_API_KEY')),
         'has_groq_key': bool(os.getenv('GROQ_API_KEY')),
         'has_pinecone_host': bool(os.getenv('PINECONE_INDEX_HOST'))
-    })
-
-@app.route('/api/stats', methods=['GET'])
-def get_stats():
-    """Get stats about the knowledge base"""
-    try:
-        if _pinecone_index is None:
-            return jsonify({
-                'total_documents': 0,
-                'total_chunks': 0,
-                'total_pages': 0,
-                'error': 'Pinecone not connected',
-                'connected': False
-            })
-        
-        stats = _pinecone_index.describe_index_stats()
-        vector_count = stats.get('total_vector_count', 0)
-        
-        # Try to get document count from metadata
-        # Since we can't query all, return what we know
-        return jsonify({
-            'total_documents': 10,  # From your metadata
-            'total_chunks': vector_count,
-            'total_pages': 0,
-            'connected': True,
-            'vector_count': vector_count,
-            'index_name': PINECONE_INDEX_NAME
-        })
-    except Exception as e:
-        return jsonify({
-            'error': str(e),
-            'connected': False
-        }), 500
-
-@app.route('/api/categories', methods=['GET'])
-def get_categories():
-    """Get all categories"""
-    return jsonify({
-        'categories': ['general', 'academic', 'medical', 'resume/cv', 'guide']
     })
 
 @app.route('/api/chat', methods=['POST'])
@@ -464,7 +427,7 @@ def chat():
         sources = []
         
         for match in matches:
-            if match.get('score', 0) > 0.3:  # Lower threshold for more results
+            if match.get('score', 0) > 0.3:
                 text = match.get('metadata', {}).get('text', '')
                 source_file = match.get('metadata', {}).get('source_file', 'unknown')
                 page = match.get('metadata', {}).get('page_number', 1)
@@ -511,39 +474,6 @@ def chat():
             'answer': "An unexpected error occurred. Please try again."
         }), 500
 
-@app.route('/api/chat-widget', methods=['POST'])
-def chat_widget():
-    """Chat endpoint specifically for the widget (uses 'message' field)"""
-    try:
-        data = request.get_json()
-        
-        if not data or 'message' not in data:
-            return jsonify({'error': 'Missing "message" field'}), 400
-        
-        user_message = data['message'].strip()
-        
-        if not user_message:
-            return jsonify({'error': 'Empty message'}), 400
-        
-        # Forward to main chat handler
-        # Reformat request to use 'question' field
-        data['question'] = user_message
-        
-        # Use the same logic as /api/chat
-        response = chat()
-        
-        # If response is a tuple, get the JSON data
-        if isinstance(response, tuple):
-            return response
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Widget chat error: {e}")
-        return jsonify({
-            'error': str(e)
-        }), 500
-
 # ===== ERROR HANDLERS =====
 @app.errorhandler(404)
 def not_found(e):
@@ -554,6 +484,10 @@ def internal_error(e):
     return jsonify({'error': 'Internal server error'}), 500
 
 # ===== STARTUP =====
+# Initialize clients immediately when the module loads
+print("🔄 Initializing clients on module load...", flush=True)
+initialize_clients()
+
 if __name__ == '__main__':
     # Check configuration
     missing_vars = []
@@ -569,9 +503,6 @@ if __name__ == '__main__':
         print("Please check your .env file and Vercel environment variables", flush=True)
     else:
         print("✅ All required environment variables are set", flush=True)
-    
-    # Initialize clients
-    initialize_clients()
     
     # Print status
     doc_status = check_documents_exist()
