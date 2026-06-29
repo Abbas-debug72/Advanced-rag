@@ -1,10 +1,8 @@
+# requirements-server.txt - For Vercel deployment (lightweight)
 flask
 python-dotenv
 pinecone
 groq
-requests
-langchain
+langchain-groq
 langchain-core
 langchain-community
-langchain-text-splitters
-pypdf
