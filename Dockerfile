@@ -7,7 +7,8 @@ RUN apt-get update && apt-get install -y gcc g++ && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py brain.py memory.py brain_metadata.json ./
+# Copy all files including widget.js
+COPY app.py brain.py memory.py brain_metadata.json widget.js ./
 COPY templates/ ./templates/
 COPY static/ ./static/
 

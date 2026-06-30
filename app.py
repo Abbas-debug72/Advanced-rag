@@ -96,6 +96,12 @@ def ping():
 @app.route('/widget.js')
 def serve_widget():
     """Serve the widget JavaScript file"""
+    try:
+        return send_from_directory('.', 'widget.js')
+    except Exception as e:
+        print(f"⚠️ Error serving widget.js: {e}")
+        return "Widget not found", 404
+    """Serve the widget JavaScript file"""
     print("📨 Serving widget.js")
     try:
         return send_from_directory('.', 'widget.js')
