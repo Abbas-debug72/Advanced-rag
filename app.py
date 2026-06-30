@@ -6,6 +6,7 @@ import os
 import uuid
 import re
 from flask import Flask, request, jsonify, render_template, session, send_from_directory
+from flask_cors import CORS  # ← Add this import
 from brain import KnowledgeBrain
 from memory import ConversationMemory
 
@@ -15,6 +16,26 @@ from langchain_core.output_parsers import StrOutputParser
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
+
+# Enable CORS for all routes with proper configuration
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
+        "allow_headers": ["Content-Type", "Authorization", "Accept"],
+        "expose_headers": ["Content-Type"],
+        "supports_credentials": True
+    }
+})
+
+# Also add manual CORS headers as fallback
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept')
+    response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE')
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    return response
 
 print("🧠 Loading Knowledge Brain...")
 brain = KnowledgeBrain(pdf_directory=os.getenv("PDF_DIRECTORY", "./pdfs"))
@@ -34,7 +55,7 @@ memory = ConversationMemory()
 session_focus = {}
 
 # ------------------------------------------------------------------
-# WIDGET ROUTE - Serve widget.js
+# WIDGET ROUTE
 # ------------------------------------------------------------------
 @app.route('/widget.js')
 def serve_widget():
@@ -292,7 +313,7 @@ def serve_widget():
 })();""", 200, {'Content-Type': 'application/javascript'}
 
 # ------------------------------------------------------------------
-# IMPROVED PROMPT – deeper, structured, no robotic phrases
+# IMPROVED PROMPT
 # ------------------------------------------------------------------
 PROMPT = """You are a precise and insightful research assistant.  
 Your answers are based **only** on the document context below.
@@ -371,80 +392,101 @@ def index():
         session['session_id'] = str(uuid.uuid4())
     return render_template("index.html")
 
-@app.route("/api/chat", methods=["POST"])
+@app.route("/api/chat", methods=["GET", "POST", "OPTIONS"])
 def chat():
-    data = request.get_json()
-    question = data.get("question", "").strip()
-    session_id = data.get("session_id", session.get("session_id", "default"))
-    category = data.get("category", "all")
+    # Handle preflight OPTIONS request
+    if request.method == "OPTIONS":
+        response = jsonify({"status": "ok"})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        return response
 
-    if not question:
-        return jsonify({"error": "Question required"}), 400
+    if request.method == "GET":
+        return jsonify({"error": "Use POST method for chat"}), 405
 
-    focus_file = session_focus.get(session_id)
-    focus_cmd = detect_focus_command(question)
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data received"}), 400
 
-    # --- handle focus commands ---
-    if focus_cmd == "CLEAR":
-        session_focus.pop(session_id, None)
-        memory.add_message(session_id, "user", question)
-        memory.add_message(session_id, "assistant", "✅ Document filter cleared.")
-        return jsonify({"answer": "✅ Document filter cleared.", "sources": [], "focus": None})
+        question = data.get("question", "").strip()
+        session_id = data.get("session_id", session.get("session_id", "default"))
+        category = data.get("category", "all")
 
-    if focus_cmd is not None:
-        all_files = brain.get_all_filenames()
-        if focus_cmd in all_files:
-            session_focus[session_id] = focus_cmd
-            msg = f"✅ Now focusing on **{focus_cmd}** only."
-        else:
-            msg = f"❌ Document `{focus_cmd}` not found. Available: {', '.join(all_files)}"
-        memory.add_message(session_id, "user", question)
-        memory.add_message(session_id, "assistant", msg)
-        return jsonify({"answer": msg, "sources": [], "focus": session_focus.get(session_id)})
+        if not question:
+            return jsonify({"error": "Question required"}), 400
 
-    # --- retrieval ---
-    history = memory.get_history(session_id, last_n=6)
-    history_str = "\n".join(
-        f"{'User' if m['role']=='user' else 'Assistant'}: {m['content']}"
-        for m in history[-6:]
-    ) if history else "No history"
+        focus_file = session_focus.get(session_id)
+        focus_cmd = detect_focus_command(question)
 
-    if focus_file:
-        raw_docs = brain.search(question, k=30, category=category if category != "all" else None)
-        docs = [d for d in raw_docs if d.metadata.get('source_file', '').lower() == focus_file.lower()]
-        if not docs:
-            answer = f"I could not find any relevant information inside **{focus_file}**."
+        # --- handle focus commands ---
+        if focus_cmd == "CLEAR":
+            session_focus.pop(session_id, None)
             memory.add_message(session_id, "user", question)
-            memory.add_message(session_id, "assistant", answer)
-            return jsonify({"answer": answer, "sources": [], "focus": focus_file})
-        docs = docs[:6]
-    else:
-        docs = brain.intelligent_search(question, k=4, category=category if category != "all" else None)
+            memory.add_message(session_id, "assistant", "✅ Document filter cleared.")
+            return jsonify({"answer": "✅ Document filter cleared.", "sources": [], "focus": None})
 
-    context = format_docs(docs)
-    focus_info = f"Currently focused on: {focus_file}. Only use this document." if focus_file else "No active document filter."
+        if focus_cmd is not None:
+            all_files = brain.get_all_filenames()
+            if focus_cmd in all_files:
+                session_focus[session_id] = focus_cmd
+                msg = f"✅ Now focusing on **{focus_cmd}** only."
+            else:
+                msg = f"❌ Document `{focus_cmd}` not found. Available: {', '.join(all_files)}"
+            memory.add_message(session_id, "user", question)
+            memory.add_message(session_id, "assistant", msg)
+            return jsonify({"answer": msg, "sources": [], "focus": session_focus.get(session_id)})
 
-    # --- generation ---
-    chain = QA_PROMPT | llm | StrOutputParser()
-    answer = chain.invoke({
-        "context": context,
-        "chat_history": history_str,
-        "question": question,
-        "focus_info": focus_info
-    })
+        # --- retrieval ---
+        history = memory.get_history(session_id, last_n=6)
+        history_str = "\n".join(
+            f"{'User' if m['role']=='user' else 'Assistant'}: {m['content']}"
+            for m in history[-6:]
+        ) if history else "No history"
 
-    memory.add_message(session_id, "user", question)
-    memory.add_message(session_id, "assistant", answer)
+        if focus_file:
+            raw_docs = brain.search(question, k=30, category=category if category != "all" else None)
+            docs = [d for d in raw_docs if d.metadata.get('source_file', '').lower() == focus_file.lower()]
+            if not docs:
+                answer = f"I could not find any relevant information inside **{focus_file}**."
+                memory.add_message(session_id, "user", question)
+                memory.add_message(session_id, "assistant", answer)
+                return jsonify({"answer": answer, "sources": [], "focus": focus_file})
+            docs = docs[:6]
+        else:
+            docs = brain.intelligent_search(question, k=4, category=category if category != "all" else None)
 
-    seen_src = set()
-    sources = []
-    for doc in docs:
-        src = doc.metadata.get("source_file", "?")
-        if src not in seen_src:
-            seen_src.add(src)
-            sources.append({"document": src, "page": doc.metadata.get("page_number", "?")})
+        context = format_docs(docs)
+        focus_info = f"Currently focused on: {focus_file}. Only use this document." if focus_file else "No active document filter."
 
-    return jsonify({"answer": answer, "sources": sources, "focus": focus_file})
+        # --- generation ---
+        chain = QA_PROMPT | llm | StrOutputParser()
+        answer = chain.invoke({
+            "context": context,
+            "chat_history": history_str,
+            "question": question,
+            "focus_info": focus_info
+        })
+
+        memory.add_message(session_id, "user", question)
+        memory.add_message(session_id, "assistant", answer)
+
+        seen_src = set()
+        sources = []
+        for doc in docs:
+            src = doc.metadata.get("source_file", "?")
+            if src not in seen_src:
+                seen_src.add(src)
+                sources.append({"document": src, "page": doc.metadata.get("page_number", "?")})
+
+        return jsonify({"answer": answer, "sources": sources, "focus": focus_file})
+
+    except Exception as e:
+        print(f"❌ Chat error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e), "answer": f"⚠️ Error: {str(e)[:100]}"}), 500
 
 @app.route("/api/focus", methods=["POST"])
 def set_focus():
