@@ -1,18 +1,25 @@
-# app.py – Pinecone RAG Chatbot (with improved prompt)
+# app.py – Pinecone RAG Chatbot (with improved prompt & debug logging)
 from dotenv import load_dotenv
 load_dotenv()
 
 import os
+import sys
 import uuid
 import re
+import time
+import json
+import traceback
 from flask import Flask, request, jsonify, render_template, session, send_from_directory
-from flask_cors import CORS  # ← Add this import
+from flask_cors import CORS
 from brain import KnowledgeBrain
 from memory import ConversationMemory
 
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+
+# Force flush for logging
+sys.stdout.flush()
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -28,7 +35,7 @@ CORS(app, resources={
     }
 })
 
-# Also add manual CORS headers as fallback
+# Manual CORS headers as fallback
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
@@ -392,10 +399,39 @@ def index():
         session['session_id'] = str(uuid.uuid4())
     return render_template("index.html")
 
+@app.route("/api/test", methods=["GET", "POST", "OPTIONS"])
+def test():
+    """Test endpoint to check if POST requests are working"""
+    if request.method == "OPTIONS":
+        response = jsonify({"status": "ok"})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        return response
+    
+    if request.method == "GET":
+        return jsonify({"status": "ok", "message": "Test endpoint is working. Use POST to send data."})
+    
+    try:
+        print("📨 Test endpoint received request")
+        data = request.get_json()
+        print(f"📨 Test data: {data}")
+        return jsonify({
+            "status": "ok",
+            "received": data,
+            "headers": dict(request.headers)
+        })
+    except Exception as e:
+        print(f"❌ Test error: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/chat", methods=["GET", "POST", "OPTIONS"])
 def chat():
+    """Main chat endpoint with extensive debug logging"""
+    
     # Handle preflight OPTIONS request
     if request.method == "OPTIONS":
+        print("📨 OPTIONS request received")
         response = jsonify({"status": "ok"})
         response.headers.add('Access-Control-Allow-Origin', '*')
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept')
@@ -405,29 +441,85 @@ def chat():
     if request.method == "GET":
         return jsonify({"error": "Use POST method for chat"}), 405
 
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "No data received"}), 400
+    # Start timing for debugging
+    start_time = time.time()
+    print(f"\n{'='*60}")
+    print(f"📨 CHAT REQUEST STARTED at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*60}")
 
+    try:
+        # Log request info
+        print(f"📨 Request method: {request.method}")
+        print(f"📨 Request headers: {dict(request.headers)}")
+        
+        # Get raw data
+        raw_data = request.get_data(as_text=True)
+        print(f"📨 Raw request data (first 500 chars): {raw_data[:500]}")
+        
+        # Try to parse JSON
+        data = None
+        if request.is_json:
+            data = request.get_json()
+            print(f"📨 Parsed JSON data: {data}")
+        else:
+            print(f"⚠️ Request is not JSON. Content-Type: {request.content_type}")
+            # Try to parse anyway
+            try:
+                data = json.loads(raw_data) if raw_data else None
+                print(f"📨 Manually parsed JSON: {data}")
+            except json.JSONDecodeError as e:
+                print(f"❌ JSON parse error: {e}")
+                return jsonify({
+                    "error": "Invalid JSON format",
+                    "answer": "⚠️ Invalid JSON format. Please send valid JSON."
+                }), 400
+        
+        if not data:
+            print("❌ No data received")
+            return jsonify({
+                "error": "No data received",
+                "answer": "⚠️ No data received. Please send a question."
+            }), 400
+
+        # Extract fields with fallbacks
         question = data.get("question", "").strip()
         session_id = data.get("session_id", session.get("session_id", "default"))
         category = data.get("category", "all")
+        
+        print(f"📨 Question: '{question}'")
+        print(f"📨 Session ID: {session_id}")
+        print(f"📨 Category: {category}")
 
         if not question:
-            return jsonify({"error": "Question required"}), 400
+            print("❌ Empty question")
+            return jsonify({
+                "error": "Question required",
+                "answer": "⚠️ Please provide a question."
+            }), 400
 
+        # Check brain is loaded
+        if brain is None:
+            print("❌ Brain not loaded")
+            return jsonify({
+                "answer": "⚠️ Knowledge Brain is not loaded. Please try again later."
+            }), 500
+
+        # --- Focus detection ---
         focus_file = session_focus.get(session_id)
         focus_cmd = detect_focus_command(question)
+        print(f"📨 Current focus: {focus_file}")
+        print(f"📨 Focus command detected: {focus_cmd}")
 
         # --- handle focus commands ---
         if focus_cmd == "CLEAR":
+            print("📨 Clearing focus")
             session_focus.pop(session_id, None)
             memory.add_message(session_id, "user", question)
             memory.add_message(session_id, "assistant", "✅ Document filter cleared.")
             return jsonify({"answer": "✅ Document filter cleared.", "sources": [], "focus": None})
 
         if focus_cmd is not None:
+            print(f"📨 Setting focus to: {focus_cmd}")
             all_files = brain.get_all_filenames()
             if focus_cmd in all_files:
                 session_focus[session_id] = focus_cmd
@@ -439,39 +531,66 @@ def chat():
             return jsonify({"answer": msg, "sources": [], "focus": session_focus.get(session_id)})
 
         # --- retrieval ---
+        print("📨 Retrieving conversation history...")
         history = memory.get_history(session_id, last_n=6)
         history_str = "\n".join(
             f"{'User' if m['role']=='user' else 'Assistant'}: {m['content']}"
             for m in history[-6:]
         ) if history else "No history"
+        print(f"📨 History: {history_str[:200]}...")
 
-        if focus_file:
-            raw_docs = brain.search(question, k=30, category=category if category != "all" else None)
-            docs = [d for d in raw_docs if d.metadata.get('source_file', '').lower() == focus_file.lower()]
-            if not docs:
-                answer = f"I could not find any relevant information inside **{focus_file}**."
-                memory.add_message(session_id, "user", question)
-                memory.add_message(session_id, "assistant", answer)
-                return jsonify({"answer": answer, "sources": [], "focus": focus_file})
-            docs = docs[:6]
-        else:
-            docs = brain.intelligent_search(question, k=4, category=category if category != "all" else None)
+        # --- Search for relevant documents ---
+        print("📨 Searching for relevant documents...")
+        try:
+            if focus_file:
+                print(f"📨 Using focus filter: {focus_file}")
+                raw_docs = brain.search(question, k=30, category=category if category != "all" else None)
+                docs = [d for d in raw_docs if d.metadata.get('source_file', '').lower() == focus_file.lower()]
+                if not docs:
+                    print(f"❌ No documents found in {focus_file}")
+                    answer = f"I could not find any relevant information inside **{focus_file}**."
+                    memory.add_message(session_id, "user", question)
+                    memory.add_message(session_id, "assistant", answer)
+                    return jsonify({"answer": answer, "sources": [], "focus": focus_file})
+                docs = docs[:6]
+            else:
+                print("📨 Using intelligent search")
+                docs = brain.intelligent_search(question, k=4, category=category if category != "all" else None)
+            print(f"📨 Found {len(docs)} documents")
+        except Exception as e:
+            print(f"❌ Search error: {e}")
+            traceback.print_exc()
+            return jsonify({
+                "answer": f"⚠️ Search error: {str(e)[:100]}"
+            }), 500
 
         context = format_docs(docs)
         focus_info = f"Currently focused on: {focus_file}. Only use this document." if focus_file else "No active document filter."
+        print(f"📨 Context length: {len(context)} characters")
 
         # --- generation ---
-        chain = QA_PROMPT | llm | StrOutputParser()
-        answer = chain.invoke({
-            "context": context,
-            "chat_history": history_str,
-            "question": question,
-            "focus_info": focus_info
-        })
+        print("📨 Generating response...")
+        try:
+            chain = QA_PROMPT | llm | StrOutputParser()
+            answer = chain.invoke({
+                "context": context,
+                "chat_history": history_str,
+                "question": question,
+                "focus_info": focus_info
+            })
+            print(f"📨 Generated answer length: {len(answer)} characters")
+        except Exception as e:
+            print(f"❌ Generation error: {e}")
+            traceback.print_exc()
+            return jsonify({
+                "answer": f"⚠️ Generation error: {str(e)[:100]}"
+            }), 500
 
+        # --- Save to memory ---
         memory.add_message(session_id, "user", question)
         memory.add_message(session_id, "assistant", answer)
 
+        # --- Format sources ---
         seen_src = set()
         sources = []
         for doc in docs:
@@ -479,14 +598,35 @@ def chat():
             if src not in seen_src:
                 seen_src.add(src)
                 sources.append({"document": src, "page": doc.metadata.get("page_number", "?")})
+        
+        elapsed = time.time() - start_time
+        print(f"📨 Request completed in {elapsed:.2f} seconds")
+        print(f"{'='*60}\n")
 
-        return jsonify({"answer": answer, "sources": sources, "focus": focus_file})
+        return jsonify({
+            "answer": answer,
+            "sources": sources,
+            "focus": focus_file,
+            "_debug": {
+                "docs_found": len(docs),
+                "context_length": len(context),
+                "elapsed_seconds": round(elapsed, 2)
+            }
+        })
 
     except Exception as e:
-        print(f"❌ Chat error: {e}")
-        import traceback
+        elapsed = time.time() - start_time
+        print(f"❌ CHAT ERROR after {elapsed:.2f} seconds:")
+        print(f"❌ Error type: {type(e).__name__}")
+        print(f"❌ Error message: {str(e)}")
+        print("❌ Full traceback:")
         traceback.print_exc()
-        return jsonify({"error": str(e), "answer": f"⚠️ Error: {str(e)[:100]}"}), 500
+        print(f"{'='*60}\n")
+        
+        return jsonify({
+            "error": str(e),
+            "answer": f"⚠️ An error occurred: {str(e)[:150]}"
+        }), 500
 
 @app.route("/api/focus", methods=["POST"])
 def set_focus():
@@ -525,6 +665,20 @@ def clear_conversation(session_id):
     session_focus.pop(session_id, None)
     return jsonify({"success": True})
 
+@app.route("/api/debug", methods=["GET"])
+def debug():
+    """Debug endpoint to check environment and connections"""
+    import os
+    return jsonify({
+        "pinecone_key_set": bool(os.getenv("PINECONE_API_KEY")),
+        "groq_key_set": bool(os.getenv("GROQ_API_KEY")),
+        "documents_loaded": len(brain.documents_metadata) if brain else 0,
+        "chunks": brain.get_stats().get("total_chunks", 0) if brain else 0,
+        "env_vars": [k for k in os.environ.keys() if not k.startswith('_') and not k.startswith('PYTHON')][:10]
+    })
+
 if __name__ == "__main__":
     print("\n🚀 Pinecone RAG Chatbot: http://127.0.0.1:5000")
+    print("📊 Debug endpoint: /api/debug")
+    print("🧪 Test endpoint: /api/test")
     app.run(debug=False, host="0.0.0.0", port=5000)
