@@ -1,8 +1,11 @@
-# requirements-server.txt - For Vercel deployment (lightweight)
-flask
-python-dotenv
+sentence-transformers>=3.0.0
 pinecone
-groq
-langchain-groq
-langchain-core
+langchain
 langchain-community
+langchain-text-splitters
+langchain-huggingface
+langchain-core
+langchain-groq
+pypdf
+python-dotenv
+langchain-experimental

@@ -21,9 +21,9 @@ class KnowledgeBrain:
     def __init__(
         self,
         pdf_directory: str = "./pdfs",
-        embedding_model: Optional[str] = None,
-        chunk_size: Optional[int] = None,
-        chunk_overlap: Optional[int] = None,
+        embedding_model: str = None,
+        chunk_size: int = None,
+        chunk_overlap: int = None,
     ):
         self.pdf_directory = Path(pdf_directory)
 
@@ -47,11 +47,6 @@ class KnowledgeBrain:
         # ── 3. Pinecone setup ──
         self.api_key = os.getenv("PINECONE_API_KEY")
         self.index_host = os.getenv("PINECONE_INDEX_HOST")
-        
-        # Clean up the host URL
-        if self.index_host:
-            self.index_host = self.index_host.replace('https://', '').replace('http://', '').rstrip('/')
-        
         self.pc = Pinecone(api_key=self.api_key)
         self.index = self.pc.Index(host=self.index_host)
 
@@ -175,7 +170,7 @@ class KnowledgeBrain:
         return "general"
 
     # ------------------------------------------------------------------
-    # INGESTION (uses SemanticChunker)
+    # INGESTION
     # ------------------------------------------------------------------
     def ingest_all_pdfs(self) -> Dict:
         pdf_files = list(self.pdf_directory.glob("**/*.pdf"))
@@ -190,7 +185,7 @@ class KnowledgeBrain:
         text_splitter = SemanticChunker(
             self.embeddings,
             breakpoint_threshold_type="percentile",
-            breakpoint_threshold_amount=90  # higher = fewer splits
+            breakpoint_threshold_amount=90
         )
 
         for i, pdf_path in enumerate(pdf_files, 1):
@@ -217,7 +212,6 @@ class KnowledgeBrain:
                         "page_number": page_num + 1,
                     })
 
-                # Use semantic chunker
                 chunks = text_splitter.split_documents(pages)
 
                 vectors = []
@@ -231,7 +225,6 @@ class KnowledgeBrain:
                         "metadata": chunk.metadata
                     })
 
-                # Upsert in batches
                 BATCH = 100
                 for j in range(0, len(vectors), BATCH):
                     self.index.upsert(vectors=vectors[j:j+BATCH])
@@ -260,7 +253,6 @@ class KnowledgeBrain:
     # SEARCH (Pinecone + cross-encoder reranking)
     # ------------------------------------------------------------------
     def search(self, query: str, k: int = 4, category: str = None) -> List[Document]:
-        """Raw vector search (no reranking yet)."""
         query_embedding = self.embeddings.embed_query(query)
         filter_dict = None
         if category and category != "all":
@@ -281,7 +273,6 @@ class KnowledgeBrain:
         return docs
 
     def _rerank_with_cross_encoder(self, query: str, docs: List[Document], top_k: int) -> List[Document]:
-        """Cross-encoder reranker – gives true relevance scores."""
         if not docs:
             return docs
         pairs = [(query, doc.page_content) for doc in docs]
@@ -291,19 +282,9 @@ class KnowledgeBrain:
         return [doc for _, doc in scored[:top_k]]
 
     def intelligent_search(self, query: str, k: int = 4, category: str = None) -> List[Document]:
-        """
-        Full intelligent pipeline:
-        1. Dense retrieval from Pinecone (top 25)
-        2. Cross-encoder reranking (top 10)
-        3. Custom topic/entity scoring on the reduced set (top 4)
-        """
-        # 1. Retrieve more candidates
-        raw_docs = self.search(query, k=5, category=category)  # 5*5=25
-
-        # 2. Rerank with cross-encoder to top 10
+        raw_docs = self.search(query, k=5, category=category)
         reranked = self._rerank_with_cross_encoder(query, raw_docs, top_k=10)
 
-        # 3. Apply your custom scoring on the remaining candidates
         query_analysis = self._analyze_query(query)
         scored = []
         for doc in reranked:
@@ -319,7 +300,6 @@ class KnowledgeBrain:
 
         scored.sort(key=lambda x: x[0], reverse=True)
 
-        # Dynamic threshold
         if scored:
             top_score = scored[0][0]
             MIN_SCORE = max(30, top_score * 0.5)
@@ -354,7 +334,9 @@ class KnowledgeBrain:
         print(f"   ✅ Returning {len(result)} documents")
         return result[:k]
 
-    # Scoring methods
+    # ------------------------------------------------------------------
+    # SCORING METHODS
+    # ------------------------------------------------------------------
     def _analyze_query(self, query: str) -> dict:
         query_clean = re.sub(r'[?.,!;:()"\'*]', ' ', query)
         query_clean = re.sub(r'\s+', ' ', query_clean).strip()

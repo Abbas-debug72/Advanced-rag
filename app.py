@@ -1,156 +1,49 @@
-# app_server.py - Vercel version using Railway embeddings server
+# app.py – Pinecone RAG Chatbot (with improved prompt)
 from dotenv import load_dotenv
 load_dotenv()
 
 import os
 import uuid
-import json
-import requests
-from flask import Flask, request, jsonify, session, make_response
+import re
+from flask import Flask, request, jsonify, render_template, session, send_from_directory
+from brain import KnowledgeBrain
 from memory import ConversationMemory
-from pinecone import Pinecone
-from groq import Groq
+
+from langchain_groq import ChatGroq
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
-print("🚀 Starting RAG server with Railway embeddings server...")
+print("🧠 Loading Knowledge Brain...")
+brain = KnowledgeBrain(pdf_directory=os.getenv("PDF_DIRECTORY", "./pdfs"))
 
-# ===== CONFIGURATION =====
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_INDEX_HOST = os.getenv("PINECONE_INDEX_HOST")
-PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "knowledge-brain")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_CHAT_MODEL", "mixtral-8x7b-32768")
+api_key = os.getenv("GROQ_API_KEY")
+if not api_key:
+    raise RuntimeError("GROQ_API_KEY not set in .env file")
 
-# Railway Embeddings Server URL
-EMBEDDING_SERVER_URL = os.getenv("EMBEDDING_SERVER_URL", "https://your-embedding-server.railway.app")
-
-print(f"🔗 Embeddings server: {EMBEDDING_SERVER_URL}")
-
-if not PINECONE_API_KEY:
-    print("⚠️ PINECONE_API_KEY not set")
-if not GROQ_API_KEY:
-    print("⚠️ GROQ_API_KEY not set")
-
-# ===== CORS HEADERS =====
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
-    response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-    return response
-
-# ===== INITIALIZE CLIENTS =====
-pc = Pinecone(api_key=PINECONE_API_KEY)
-index = pc.Index(host=PINECONE_INDEX_HOST)
-groq_client = Groq(api_key=GROQ_API_KEY)
-
-# ===== EMBEDDING FUNCTION (Calls Railway server) =====
-def get_embedding(text: str):
-    """Get embedding from Railway embeddings server"""
-    try:
-        if len(text) > 8000:
-            text = text[:8000]
-        
-        response = requests.post(
-            f"{EMBEDDING_SERVER_URL}/embed_single",
-            json={"text": text},
-            timeout=30
-        )
-        
-        if response.status_code == 503:
-            print("⚠️ Embeddings server is starting up. Waiting 5 seconds...")
-            import time
-            time.sleep(5)
-            return get_embedding(text)  # Retry
-        
-        response.raise_for_status()
-        data = response.json()
-        
-        embedding = data.get("embedding")
-        if not embedding:
-            raise Exception("No embedding returned")
-        
-        return embedding
-        
-    except requests.exceptions.ConnectionError:
-        raise Exception(f"Embeddings server not reachable at {EMBEDDING_SERVER_URL}")
-    except requests.exceptions.Timeout:
-        raise Exception("Embeddings server request timed out")
-    except Exception as e:
-        raise Exception(f"Embedding error: {e}")
-
-# ===== LOAD METADATA =====
-def load_document_metadata():
-    try:
-        possible_paths = [
-            "./brain_metadata.json",
-            "brain_metadata.json",
-            "/var/task/brain_metadata.json",
-            os.path.join(os.path.dirname(__file__), "brain_metadata.json")
-        ]
-        for path in possible_paths:
-            if os.path.exists(path):
-                with open(path, 'r') as f:
-                    data = json.load(f)
-                    print(f"✅ Loaded metadata from {path}: {len(data)} documents")
-                    return data
-        print("⚠️ No metadata file found.")
-        return {}
-    except Exception as e:
-        print(f"⚠️ Error loading metadata: {e}")
-        return {}
-
-documents_metadata = load_document_metadata()
-
-def get_all_filenames():
-    return list(documents_metadata.keys())
-
-def get_document_count():
-    return len(documents_metadata)
-
-# ===== PINECONE SEARCH =====
-def search_pinecone(query: str, top_k: int = 5):
-    try:
-        query_embedding = get_embedding(query)
-        results = index.query(
-            vector=query_embedding,
-            top_k=top_k,
-            include_metadata=True
-        )
-        return results.get('matches', [])
-    except Exception as e:
-        print(f"Search error: {e}")
-        raise
-
-# ===== GROQ RESPONSE =====
-def generate_response(query: str, context: str):
-    try:
-        response = groq_client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": """You are a helpful assistant that answers questions based on the provided context.
-If the context doesn't contain the answer, say "I could not find that information in the documents."
-Be concise and accurate. Use the context to support your answers.
-Always cite the source document when possible."""},
-                {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
-            ],
-            temperature=0.3,
-            max_tokens=500
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        print(f"Generation error: {e}")
-        raise
+llm = ChatGroq(
+    api_key=api_key,
+    model="llama-3.1-8b-instant",
+    temperature=0.1,
+    max_tokens=1024
+)
 
 memory = ConversationMemory()
+session_focus = {}
 
-# ===== WIDGET ROUTE =====
+# ------------------------------------------------------------------
+# WIDGET ROUTE - Serve widget.js
+# ------------------------------------------------------------------
 @app.route('/widget.js')
 def serve_widget():
-    widget_code = """
-// Chat Widget - Knowledge Brain
+    """Serve the widget JavaScript file"""
+    try:
+        return send_from_directory('.', 'widget.js')
+    except:
+        # Fallback if file doesn't exist
+        return """// Chat Widget - Knowledge Brain
 (function() {
     const CONFIG = {
         apiUrl: window.CHATBOT_API_URL || window.location.origin,
@@ -396,267 +289,200 @@ def serve_widget():
     } else {
         createWidget();
     }
-})();
-"""
-    return widget_code, 200, {'Content-Type': 'application/javascript'}
+})();""", 200, {'Content-Type': 'application/javascript'}
 
-# ===== API ROUTES =====
+# ------------------------------------------------------------------
+# IMPROVED PROMPT – deeper, structured, no robotic phrases
+# ------------------------------------------------------------------
+PROMPT = """You are a precise and insightful research assistant.  
+Your answers are based **only** on the document context below.
 
+**Rules:**
+- If the context contains enough detail, provide a **comprehensive answer** with examples, comparisons, or steps (as appropriate).
+- Structure your answer clearly: use **bullet points** for lists, **paragraphs** for explanations.
+- Do **not** mention the context itself (e.g., "according to the document").
+- If the context lacks the answer, say: "I could not find that information in the knowledge base."
+- Match the level of detail to the question: a simple question gets a concise answer; a complex or open‑ended question gets a thorough one.
+
+**Active filter:** {focus_info}
+
+**Context from documents:**
+{context}
+
+**Conversation history:**
+{chat_history}
+
+**Question:** {question}
+**Answer:**"""
+
+QA_PROMPT = ChatPromptTemplate.from_template(PROMPT)
+
+def format_docs(docs):
+    parts = []
+    seen = set()
+    for doc in docs:
+        src = doc.metadata.get('source_file', '?')
+        if src in seen:
+            continue
+        seen.add(src)
+        page = doc.metadata.get('page_number', '?')
+        parts.append(f"[{src} p{page}]\n{doc.page_content[:800]}\n")
+    return "\n".join(parts)
+
+# ------------------------------------------------------------------
+# Focus management
+# ------------------------------------------------------------------
+def resolve_filename(user_input: str):
+    all_files = brain.get_all_filenames()
+    for f in all_files:
+        if user_input.lower() == f.lower():
+            return f
+    if not user_input.lower().endswith('.pdf'):
+        for f in all_files:
+            if f.lower() == user_input.lower() + '.pdf':
+                return f
+    return None
+
+def detect_focus_command(question: str):
+    q = question.lower()
+    patterns = [
+        r'only\s+use\s+([\w\-.]+(?:\.pdf)?)',
+        r'focus\s+on\s+([\w\-.]+(?:\.pdf)?)',
+        r'use\s+only\s+([\w\-.]+(?:\.pdf)?)',
+    ]
+    for pat in patterns:
+        m = re.search(pat, q)
+        if m:
+            candidate = m.group(1).strip()
+            resolved = resolve_filename(candidate)
+            if resolved:
+                return resolved
+            return candidate
+    if "clear focus" in q or "remove focus" in q or "no filter" in q:
+        return "CLEAR"
+    return None
+
+# ------------------------------------------------------------------
+# Routes
+# ------------------------------------------------------------------
 @app.route("/")
-def home():
-    doc_count = get_document_count()
-    return jsonify({
-        "status": "ok",
-        "service": "RAG Chatbot API",
-        "documents_loaded": doc_count,
-        "pinecone_connected": True,
-        "groq_connected": True,
-        "embedding_provider": "Railway Embeddings Server",
-        "embedding_server": EMBEDDING_SERVER_URL,
-        "message": f"{doc_count} documents loaded" if doc_count > 0 else "No documents loaded yet."
-    })
+def index():
+    if 'session_id' not in session:
+        session['session_id'] = str(uuid.uuid4())
+    return render_template("index.html")
 
-@app.route("/api/health", methods=["GET"])
-def health():
-    """Health check endpoint"""
-    # Check if embeddings server is reachable
-    embedding_status = "unknown"
-    try:
-        response = requests.get(f"{EMBEDDING_SERVER_URL}/health", timeout=5)
-        if response.status_code == 200:
-            embedding_status = "healthy"
+@app.route("/api/chat", methods=["POST"])
+def chat():
+    data = request.get_json()
+    question = data.get("question", "").strip()
+    session_id = data.get("session_id", session.get("session_id", "default"))
+    category = data.get("category", "all")
+
+    if not question:
+        return jsonify({"error": "Question required"}), 400
+
+    focus_file = session_focus.get(session_id)
+    focus_cmd = detect_focus_command(question)
+
+    # --- handle focus commands ---
+    if focus_cmd == "CLEAR":
+        session_focus.pop(session_id, None)
+        memory.add_message(session_id, "user", question)
+        memory.add_message(session_id, "assistant", "✅ Document filter cleared.")
+        return jsonify({"answer": "✅ Document filter cleared.", "sources": [], "focus": None})
+
+    if focus_cmd is not None:
+        all_files = brain.get_all_filenames()
+        if focus_cmd in all_files:
+            session_focus[session_id] = focus_cmd
+            msg = f"✅ Now focusing on **{focus_cmd}** only."
         else:
-            embedding_status = "unhealthy"
-    except:
-        embedding_status = "unreachable"
-    
-    return jsonify({
-        "status": "healthy",
-        "documents": get_document_count(),
-        "pinecone_connected": True,
-        "groq_connected": True,
-        "embedding_server_status": embedding_status,
-        "embedding_server": EMBEDDING_SERVER_URL
+            msg = f"❌ Document `{focus_cmd}` not found. Available: {', '.join(all_files)}"
+        memory.add_message(session_id, "user", question)
+        memory.add_message(session_id, "assistant", msg)
+        return jsonify({"answer": msg, "sources": [], "focus": session_focus.get(session_id)})
+
+    # --- retrieval ---
+    history = memory.get_history(session_id, last_n=6)
+    history_str = "\n".join(
+        f"{'User' if m['role']=='user' else 'Assistant'}: {m['content']}"
+        for m in history[-6:]
+    ) if history else "No history"
+
+    if focus_file:
+        raw_docs = brain.search(question, k=30, category=category if category != "all" else None)
+        docs = [d for d in raw_docs if d.metadata.get('source_file', '').lower() == focus_file.lower()]
+        if not docs:
+            answer = f"I could not find any relevant information inside **{focus_file}**."
+            memory.add_message(session_id, "user", question)
+            memory.add_message(session_id, "assistant", answer)
+            return jsonify({"answer": answer, "sources": [], "focus": focus_file})
+        docs = docs[:6]
+    else:
+        docs = brain.intelligent_search(question, k=4, category=category if category != "all" else None)
+
+    context = format_docs(docs)
+    focus_info = f"Currently focused on: {focus_file}. Only use this document." if focus_file else "No active document filter."
+
+    # --- generation ---
+    chain = QA_PROMPT | llm | StrOutputParser()
+    answer = chain.invoke({
+        "context": context,
+        "chat_history": history_str,
+        "question": question,
+        "focus_info": focus_info
     })
 
-@app.route("/api/stats", methods=["GET"])
-def stats():
-    try:
-        stats = index.describe_index_stats()
-        return jsonify({
-            "total_documents": get_document_count(),
-            "total_chunks": stats.get('total_vector_count', 0),
-            "documents_loaded": get_document_count() > 0,
-            "ingestion_status": "complete" if get_document_count() > 0 else "pending",
-            "embedding_provider": "Railway Embeddings Server",
-            "embedding_server": EMBEDDING_SERVER_URL,
-            "embedding_model": "BAAI/bge-small-en-v1.5"
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    memory.add_message(session_id, "user", question)
+    memory.add_message(session_id, "assistant", answer)
 
-@app.route("/api/documents", methods=["GET"])
-def list_documents():
-    """List all documents in the knowledge base"""
+    seen_src = set()
+    sources = []
+    for doc in docs:
+        src = doc.metadata.get("source_file", "?")
+        if src not in seen_src:
+            seen_src.add(src)
+            sources.append({"document": src, "page": doc.metadata.get("page_number", "?")})
+
+    return jsonify({"answer": answer, "sources": sources, "focus": focus_file})
+
+@app.route("/api/focus", methods=["POST"])
+def set_focus():
+    data = request.get_json()
+    session_id = data.get("session_id", session.get("session_id", "default"))
+    filename = data.get("filename", None)
+    if filename:
+        session_focus[session_id] = filename
+    else:
+        session_focus.pop(session_id, None)
+    return jsonify({"focus": session_focus.get(session_id)})
+
+@app.route("/api/stats")
+def stats():
+    return jsonify(brain.get_stats())
+
+@app.route("/api/documents")
+def documents():
     docs = []
-    for fname, meta in documents_metadata.items():
+    for fname, meta in brain.documents_metadata.items():
         docs.append({
             "filename": fname,
             "pages": meta.get("pages", 0),
             "chunks": meta.get("chunks", 0),
             "category": meta.get("category", "general")
         })
-    return jsonify({
-        "documents": docs,
-        "total": len(docs)
-    })
+    return jsonify({"documents": docs, "total": len(docs)})
 
-@app.route("/api/categories", methods=["GET"])
+@app.route("/api/categories")
 def categories():
-    """Get all categories"""
-    cats = set()
-    for meta in documents_metadata.values():
-        cats.add(meta.get("category", "general"))
-    return jsonify({"categories": sorted(list(cats))})
-
-@app.route("/api/chat", methods=["POST", "OPTIONS"])
-def chat():
-    if request.method == "OPTIONS":
-        response = jsonify({"status": "ok"})
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
-        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
-        return response
-
-    try:
-        print("📨 Chat request received")
-        
-        if not request.is_json:
-            return jsonify({
-                "error": "Content-Type must be application/json",
-                "answer": "Please send JSON data"
-            }), 400
-        
-        data = request.get_json(silent=True)
-        
-        if not data:
-            return jsonify({
-                "error": "No data received",
-                "answer": "Please send a question in JSON format"
-            }), 400
-            
-        question = data.get("question", "").strip()
-        session_id = data.get("session_id", "default")
-        
-        if not question:
-            return jsonify({
-                "error": "Question required",
-                "answer": "Please provide a question"
-            }), 400
-
-        if get_document_count() == 0:
-            return jsonify({
-                "answer": "⚠️ No documents have been ingested yet. Please run `python ingest_all.py` locally first.",
-                "sources": []
-            })
-
-        # Get embedding from Railway server
-        try:
-            query_embedding = get_embedding(question)
-        except Exception as e:
-            error_msg = str(e)
-            if "unreachable" in error_msg.lower() or "connection" in error_msg.lower():
-                return jsonify({
-                    "answer": "⚠️ Embeddings server is not reachable. Please check your EMBEDDING_SERVER_URL environment variable.",
-                    "sources": []
-                })
-            else:
-                return jsonify({
-                    "answer": f"⚠️ Embedding error: {error_msg[:200]}",
-                    "sources": []
-                })
-
-        # Search Pinecone
-        try:
-            results = index.query(
-                vector=query_embedding,
-                top_k=5,
-                include_metadata=True
-            )
-            matches = results.get('matches', [])
-        except Exception as e:
-            return jsonify({
-                "answer": f"⚠️ Database error: {str(e)[:100]}",
-                "sources": []
-            })
-
-        if not matches:
-            return jsonify({
-                "answer": "I could not find relevant information in the knowledge base.",
-                "sources": []
-            })
-
-        context_parts = []
-        sources = []
-        for match in matches:
-            if match.get('score', 0) > 0.3:
-                text = match.get('metadata', {}).get('text', '')
-                source_file = match.get('metadata', {}).get('source_file', 'unknown')
-                if text:
-                    context_parts.append(text)
-                    sources.append({'document': source_file})
-
-        if not context_parts:
-            return jsonify({
-                "answer": "I found some information but with low confidence. Please rephrase your question.",
-                "sources": []
-            })
-
-        context = "\n\n---\n\n".join(context_parts[:3])
-        
-        try:
-            response = groq_client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant. Answer based on the context provided."},
-                    {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"}
-                ],
-                temperature=0.3,
-                max_tokens=500
-            )
-            answer = response.choices[0].message.content
-        except Exception as e:
-            return jsonify({
-                "answer": f"⚠️ Generation error: {str(e)[:100]}",
-                "sources": sources[:3]
-            })
-
-        memory.add_message(session_id, "user", question)
-        memory.add_message(session_id, "assistant", answer)
-
-        return jsonify({
-            "answer": answer,
-            "sources": sources[:3],
-            "sources_count": len(sources)
-        })
-
-    except Exception as e:
-        print(f"❌ Chat error: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({
-            "error": str(e),
-            "answer": f"⚠️ An error occurred: {str(e)[:100]}"
-        }), 500
+    return jsonify({"categories": brain.get_categories()})
 
 @app.route("/api/conversation/<session_id>", methods=["DELETE"])
 def clear_conversation(session_id):
     memory.clear_session(session_id)
+    session_focus.pop(session_id, None)
     return jsonify({"success": True})
 
-@app.route("/api/focus", methods=["POST"])
-def set_focus():
-    data = request.get_json()
-    session_id = data.get("session_id", "default")
-    filename = data.get("filename", None)
-    return jsonify({"focus": filename})
-
-@app.route("/widget-demo")
-def widget_demo():
-    return """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Chat Widget Demo</title>
-    <style>
-        body { font-family: Arial; padding: 40px; background: #1a1a2e; color: white; text-align: center; }
-        .container { max-width: 600px; margin: 0 auto; padding: 40px; background: #16213e; border-radius: 16px; }
-        h1 { font-size: 2rem; }
-        .status { color: #4ade80; }
-        .subtitle { font-size: 0.8rem; color: #64748b; margin-top: 20px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🧠 Knowledge Brain Chat</h1>
-        <p class="status">✅ Widget is ready</p>
-        <p>Click the chat bubble in the bottom-right corner to start asking questions!</p>
-        <p class="subtitle">Powered by Pinecone + Groq + Railway Embeddings</p>
-    </div>
-    <script>
-        window.CHATBOT_API_URL = window.location.origin;
-        window.CHATBOT_NAME = 'Knowledge Bot';
-        window.CHATBOT_AVATAR = '🧠';
-        window.CHATBOT_COLOR = '#533483';
-        window.CHATBOT_GREETING = 'Hello! Ask me anything about our documents.';
-    </script>
-    <script src="/widget.js"></script>
-</body>
-</html>
-"""
-
 if __name__ == "__main__":
-    print("\n🚀 RAG Chatbot with Railway Embeddings Server")
-    print(f"📚 Documents: {get_document_count()}")
-    print(f"🔗 Embeddings server: {EMBEDDING_SERVER_URL}")
-    app.run(debug=False, host="0.0.0.0", port=5000)
+    print("\n🚀 Pinecone RAG Chatbot: http://127.0.0.1:5000")
+    app.run(debug=False, host="127.0.0.1", port=5000)

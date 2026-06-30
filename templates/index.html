@@ -1,404 +1,321 @@
 <!doctype html>
 <html lang="en">
-  <head>
+<head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Knowledge Brain Chatbot</title>
     <style>
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-      }
-      body {
-        font-family:
-          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        background: #1a1a2e;
-        height: 100vh;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-      }
-      .chat-container {
-        width: 90%;
-        max-width: 800px;
-        height: 90vh;
-        background: #16213e;
-        border-radius: 16px;
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-      }
-      .chat-header {
-        background: linear-gradient(135deg, #0f3460, #533483);
-        color: white;
-        padding: 20px;
-        text-align: center;
-        font-size: 1.2rem;
-        font-weight: bold;
-      }
-      .chat-header .stats {
-        font-size: 0.7rem;
-        opacity: 0.7;
-        margin-top: 4px;
-      }
-      .focus-indicator {
-        margin-top: 8px;
-        font-size: 0.8rem;
-        color: #fbbf24;
-        background: rgba(255, 255, 255, 0.1);
-        padding: 4px 12px;
-        border-radius: 12px;
-        display: inline-block;
-      }
-      .focus-indicator button {
-        background: none;
-        border: none;
-        color: #f87171;
-        cursor: pointer;
-        font-size: 0.8rem;
-        margin-left: 6px;
-      }
-      .chat-messages {
-        flex: 1;
-        overflow-y: auto;
-        padding: 20px;
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-      }
-      .message {
-        display: flex;
-        gap: 10px;
-        max-width: 85%;
-        animation: fadeIn 0.3s;
-      }
-      @keyframes fadeIn {
-        from {
-          opacity: 0;
-          transform: translateY(10px);
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #1a1a2e;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
         }
-        to {
-          opacity: 1;
-          transform: translateY(0);
+        .chat-container {
+            width: 90%;
+            max-width: 800px;
+            height: 90vh;
+            background: #16213e;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
         }
-      }
-      .message.user {
-        align-self: flex-end;
-        flex-direction: row-reverse;
-      }
-      .message-avatar {
-        width: 36px;
-        height: 36px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 1.2rem;
-        flex-shrink: 0;
-      }
-      .message.assistant .message-avatar {
-        background: #533483;
-      }
-      .message.user .message-avatar {
-        background: #0f3460;
-      }
-      .message-content {
-        padding: 12px 16px;
-        border-radius: 12px;
-        line-height: 1.6;
-        font-size: 0.95rem;
-        color: white;
-      }
-      .message.assistant .message-content {
-        background: #1a1a3e;
-      }
-      .message.user .message-content {
-        background: #0f3460;
-      }
-      .sources {
-        margin-top: 6px;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-      }
-      .source-tag {
-        padding: 2px 8px;
-        background: rgba(255, 255, 255, 0.1);
-        border-radius: 6px;
-        font-size: 0.65rem;
-        color: #a0aec0;
-      }
-      .chat-input {
-        padding: 16px;
-        background: #16213e;
-        display: flex;
-        gap: 10px;
-        border-top: 1px solid #1a1a3e;
-      }
-      #questionInput {
-        flex: 1;
-        padding: 12px 16px;
-        border: 1px solid #2d2d5e;
-        border-radius: 12px;
-        background: #1a1a3e;
-        color: white;
-        font-size: 0.95rem;
-        outline: none;
-      }
-      #questionInput:focus {
-        border-color: #533483;
-      }
-      #sendBtn {
-        padding: 12px 24px;
-        background: #533483;
-        color: white;
-        border: none;
-        border-radius: 12px;
-        cursor: pointer;
-        font-size: 0.95rem;
-      }
-      #sendBtn:hover {
-        background: #6c4fa0;
-      }
-      select {
-        padding: 8px;
-        border-radius: 8px;
-        background: #1a1a3e;
-        color: white;
-        border: 1px solid #2d2d5e;
-        font-size: 0.8rem;
-      }
-      .typing {
-        display: flex;
-        gap: 4px;
-        padding: 12px 16px;
-      }
-      .typing span {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: #533483;
-        animation: bounce 1.4s infinite;
-      }
-      .typing span:nth-child(2) {
-        animation-delay: 0.2s;
-      }
-      .typing span:nth-child(3) {
-        animation-delay: 0.4s;
-      }
-      @keyframes bounce {
-        0%,
-        60%,
-        100% {
-          transform: translateY(0);
+        .chat-header {
+            background: linear-gradient(135deg, #0f3460, #533483);
+            color: white;
+            padding: 20px;
+            text-align: center;
+            font-size: 1.2rem;
+            font-weight: bold;
         }
-        30% {
-          transform: translateY(-8px);
+        .chat-header .stats {
+            font-size: 0.7rem;
+            opacity: 0.7;
+            margin-top: 4px;
         }
-      }
-    </style>
-  </head>
-  <body>
-    <div class="chat-container">
-      <div class="chat-header">
-        🧠 Knowledge Brain Chatbot
-        <div class="stats" id="brainStats">Loading...</div>
-        <div class="focus-indicator" id="focusIndicator" style="display: none">
-          📌 Focusing on: <span id="focusFilename"></span>
-          <button onclick="clearFocus()">✕</button>
-        </div>
-      </div>
-      <div
-        style="
-          padding: 10px 20px;
-          display: flex;
-          gap: 10px;
-          align-items: center;
-        "
-      >
-        <span style="color: #a0aec0; font-size: 0.8rem">Filter:</span>
-        <select id="categoryFilter" onchange="activeCategory = this.value">
-          <option value="all">All Categories</option>
-        </select>
-        <button
-          onclick="clearChat()"
-          style="
-            margin-left: auto;
-            padding: 6px 12px;
-            background: transparent;
-            color: #a0aec0;
-            border: 1px solid #2d2d5e;
-            border-radius: 6px;
+        .focus-indicator {
+            margin-top: 8px;
+            font-size: 0.8rem;
+            color: #fbbf24;
+            background: rgba(255,255,255,0.1);
+            padding: 4px 12px;
+            border-radius: 12px;
+            display: inline-block;
+        }
+        .focus-indicator button {
+            background: none;
+            border: none;
+            color: #f87171;
             cursor: pointer;
             font-size: 0.8rem;
-          "
-        >
-          New Chat
-        </button>
-      </div>
-      <div class="chat-messages" id="chatMessages">
-        <div class="message assistant">
-          <div class="message-avatar">🤖</div>
-          <div class="message-content">
-            Hello! Ask me anything about the documents in my knowledge base.
-            <br /><small
-              >Tip: Type <strong>"only use filename.pdf"</strong> to focus on
-              one document. Type <strong>"clear focus"</strong> to reset.</small
-            >
-          </div>
+            margin-left: 6px;
+        }
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .message {
+            display: flex;
+            gap: 10px;
+            max-width: 85%;
+            animation: fadeIn 0.3s;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .message.user { align-self: flex-end; flex-direction: row-reverse; }
+        .message-avatar {
+            width: 36px; height: 36px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.2rem; flex-shrink: 0;
+        }
+        .message.assistant .message-avatar { background: #533483; }
+        .message.user .message-avatar { background: #0f3460; }
+        .message-content {
+            padding: 12px 16px;
+            border-radius: 12px;
+            line-height: 1.6;
+            font-size: 0.95rem;
+            color: white;
+        }
+        .message.assistant .message-content { background: #1a1a3e; }
+        .message.user .message-content { background: #0f3460; }
+        .sources {
+            margin-top: 6px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+        .source-tag {
+            padding: 2px 8px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 6px;
+            font-size: 0.65rem;
+            color: #a0aec0;
+        }
+        .chat-input {
+            padding: 16px;
+            background: #16213e;
+            display: flex;
+            gap: 10px;
+            border-top: 1px solid #1a1a3e;
+        }
+        #questionInput {
+            flex: 1;
+            padding: 12px 16px;
+            border: 1px solid #2d2d5e;
+            border-radius: 12px;
+            background: #1a1a3e;
+            color: white;
+            font-size: 0.95rem;
+            outline: none;
+        }
+        #questionInput:focus { border-color: #533483; }
+        #sendBtn {
+            padding: 12px 24px;
+            background: #533483;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 0.95rem;
+        }
+        #sendBtn:hover { background: #6c4fa0; }
+        select {
+            padding: 8px;
+            border-radius: 8px;
+            background: #1a1a3e;
+            color: white;
+            border: 1px solid #2d2d5e;
+            font-size: 0.8rem;
+        }
+        .typing {
+            display: flex;
+            gap: 4px;
+            padding: 12px 16px;
+        }
+        .typing span {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: #533483;
+            animation: bounce 1.4s infinite;
+        }
+        .typing span:nth-child(2) { animation-delay: 0.2s; }
+        .typing span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes bounce {
+            0%, 60%, 100% { transform: translateY(0); }
+            30% { transform: translateY(-8px); }
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            🧠 Knowledge Brain Chatbot
+            <div class="stats" id="brainStats">Loading...</div>
+            <div class="focus-indicator" id="focusIndicator" style="display: none">
+                📌 Focusing on: <span id="focusFilename"></span>
+                <button onclick="clearFocus()">✕</button>
+            </div>
         </div>
-      </div>
-      <div class="chat-input">
-        <input
-          type="text"
-          id="questionInput"
-          placeholder="Ask a question..."
-          onkeypress="if (event.key === 'Enter') sendMessage();"
-          autofocus
-        />
-        <button id="sendBtn" onclick="sendMessage()">Send</button>
-      </div>
+        <div style="padding: 10px 20px; display: flex; gap: 10px; align-items: center;">
+            <span style="color: #a0aec0; font-size: 0.8rem">Filter:</span>
+            <select id="categoryFilter" onchange="activeCategory = this.value">
+                <option value="all">All Categories</option>
+            </select>
+            <button onclick="clearChat()" style="margin-left: auto; padding: 6px 12px; background: transparent; color: #a0aec0; border: 1px solid #2d2d5e; border-radius: 6px; cursor: pointer; font-size: 0.8rem;">
+                New Chat
+            </button>
+        </div>
+        <div class="chat-messages" id="chatMessages">
+            <div class="message assistant">
+                <div class="message-avatar">🤖</div>
+                <div class="message-content">
+                    Hello! Ask me anything about the documents in my knowledge base.
+                    <br /><small>Tip: Type <strong>"only use filename.pdf"</strong> to focus on one document. Type <strong>"clear focus"</strong> to reset.</small>
+                </div>
+            </div>
+        </div>
+        <div class="chat-input">
+            <input type="text" id="questionInput" placeholder="Ask a question..." onkeypress="if (event.key === 'Enter') sendMessage();" autofocus />
+            <button id="sendBtn" onclick="sendMessage()">Send</button>
+        </div>
     </div>
 
     <script>
-      const sessionId =
-        localStorage.getItem("brainSession") || crypto.randomUUID();
-      localStorage.setItem("brainSession", sessionId);
-      let activeCategory = "all";
-      let currentFocus = null; // track the focused document
+        const sessionId = localStorage.getItem("brainSession") || crypto.randomUUID();
+        localStorage.setItem("brainSession", sessionId);
+        let activeCategory = "all";
+        let currentFocus = null;
 
-      async function loadStats() {
-        try {
-          const res = await fetch("/api/stats");
-          const data = await res.json();
-          document.getElementById("brainStats").textContent =
-            `${data.total_documents} docs | ${data.total_chunks} chunks | ${data.total_pages} pages`;
-        } catch (e) {}
-      }
-
-      async function loadCategories() {
-        try {
-          const res = await fetch("/api/categories");
-          const data = await res.json();
-          const sel = document.getElementById("categoryFilter");
-          data.categories.forEach((cat) => {
-            sel.innerHTML += `<option value="${cat}">${cat}</option>`;
-          });
-        } catch (e) {}
-      }
-
-      function addMessage(text, role, sources = []) {
-        const container = document.getElementById("chatMessages");
-        const div = document.createElement("div");
-        div.className = `message ${role}`;
-
-        let html = `<div class="message-avatar">${role === "user" ? "👤" : "🤖"}</div>`;
-        html += `<div class="message-content">${text.replace(/\n/g, "<br>")}`;
-
-        if (sources.length > 0) {
-          html += '<div class="sources">';
-          const seen = new Set();
-          sources.forEach((s) => {
-            const key = s.document;
-            if (!seen.has(key)) {
-              seen.add(key);
-              html += `<span class="source-tag">📄 ${s.document} p${s.page}</span>`;
-            }
-          });
-          html += "</div>";
+        async function loadStats() {
+            try {
+                const res = await fetch("/api/stats");
+                const data = await res.json();
+                document.getElementById("brainStats").textContent =
+                    `${data.total_documents} docs | ${data.total_chunks} chunks | ${data.total_pages} pages`;
+            } catch (e) {}
         }
 
-        html += "</div>";
-        div.innerHTML = html;
-        container.appendChild(div);
-        container.scrollTop = container.scrollHeight;
-      }
+        async function loadCategories() {
+            try {
+                const res = await fetch("/api/categories");
+                const data = await res.json();
+                const sel = document.getElementById("categoryFilter");
+                data.categories.forEach((cat) => {
+                    sel.innerHTML += `<option value="${cat}">${cat}</option>`;
+                });
+            } catch (e) {}
+        }
 
-      function showTyping() {
-        const container = document.getElementById("chatMessages");
-        const div = document.createElement("div");
-        div.className = "message assistant";
-        div.id = "typing";
-        div.innerHTML = `
+        function addMessage(text, role, sources = []) {
+            const container = document.getElementById("chatMessages");
+            const div = document.createElement("div");
+            div.className = `message ${role}`;
+            let html = `<div class="message-avatar">${role === "user" ? "👤" : "🤖"}</div>`;
+            html += `<div class="message-content">${text.replace(/\n/g, "<br>")}`;
+            if (sources.length > 0) {
+                html += '<div class="sources">';
+                const seen = new Set();
+                sources.forEach((s) => {
+                    const key = s.document;
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        html += `<span class="source-tag">📄 ${s.document} p${s.page}</span>`;
+                    }
+                });
+                html += "</div>";
+            }
+            html += "</div>";
+            div.innerHTML = html;
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function showTyping() {
+            const container = document.getElementById("chatMessages");
+            const div = document.createElement("div");
+            div.className = "message assistant";
+            div.id = "typing";
+            div.innerHTML = `
                 <div class="message-avatar">🤖</div>
                 <div class="message-content"><div class="typing"><span></span><span></span><span></span></div></div>
             `;
-        container.appendChild(div);
-        container.scrollTop = container.scrollHeight;
-      }
-
-      function hideTyping() {
-        const el = document.getElementById("typing");
-        if (el) el.remove();
-      }
-
-      function updateFocusDisplay(focus) {
-        const el = document.getElementById("focusIndicator");
-        if (focus) {
-          el.style.display = "inline-block";
-          document.getElementById("focusFilename").textContent = focus;
-          currentFocus = focus;
-        } else {
-          el.style.display = "none";
-          currentFocus = null;
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
         }
-      }
 
-      async function clearFocus() {
-        try {
-          await fetch("/api/focus", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ session_id: sessionId, filename: null }),
-          });
-          updateFocusDisplay(null);
-          addMessage(
-            "✅ Document filter cleared. Searching all documents again.",
-            "assistant",
-          );
-        } catch (e) {
-          console.error("Failed to clear focus", e);
+        function hideTyping() {
+            const el = document.getElementById("typing");
+            if (el) el.remove();
         }
-      }
 
-      async function sendMessage() {
-        const input = document.getElementById("questionInput");
-        const question = input.value.trim();
-        if (!question) return;
-
-        addMessage(question, "user");
-        input.value = "";
-        showTyping();
-
-        try {
-          const res = await fetch("/api/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              question,
-              session_id: sessionId,
-              category: activeCategory,
-            }),
-          });
-          const data = await res.json();
-          hideTyping();
-          addMessage(data.answer, "assistant", data.sources || []);
-
-          // Update focus display if changed
-          if (data.focus !== undefined) {
-            updateFocusDisplay(data.focus);
-          }
-        } catch (e) {
-          hideTyping();
-          addMessage("Sorry, an error occurred.", "assistant");
+        function updateFocusDisplay(focus) {
+            const el = document.getElementById("focusIndicator");
+            if (focus) {
+                el.style.display = "inline-block";
+                document.getElementById("focusFilename").textContent = focus;
+                currentFocus = focus;
+            } else {
+                el.style.display = "none";
+                currentFocus = null;
+            }
         }
-      }
 
-      async function clearChat() {
-        await fetch(`/api/conversation/${sessionId}`, { method: "DELETE" });
-        document.getElementById("chatMessages").innerHTML = `
+        async function clearFocus() {
+            try {
+                await fetch("/api/focus", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ session_id: sessionId, filename: null }),
+                });
+                updateFocusDisplay(null);
+                addMessage("✅ Document filter cleared. Searching all documents again.", "assistant");
+            } catch (e) {
+                console.error("Failed to clear focus", e);
+            }
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById("questionInput");
+            const question = input.value.trim();
+            if (!question) return;
+
+            addMessage(question, "user");
+            input.value = "";
+            showTyping();
+
+            try {
+                const res = await fetch("/api/chat", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ question, session_id: sessionId, category: activeCategory }),
+                });
+                const data = await res.json();
+                hideTyping();
+                addMessage(data.answer, "assistant", data.sources || []);
+                if (data.focus !== undefined) {
+                    updateFocusDisplay(data.focus);
+                }
+            } catch (e) {
+                hideTyping();
+                addMessage("Sorry, an error occurred.", "assistant");
+            }
+        }
+
+        async function clearChat() {
+            await fetch(`/api/conversation/${sessionId}`, { method: "DELETE" });
+            document.getElementById("chatMessages").innerHTML = `
                 <div class="message assistant">
                     <div class="message-avatar">🤖</div>
                     <div class="message-content">
@@ -407,11 +324,11 @@
                     </div>
                 </div>
             `;
-        updateFocusDisplay(null); // clear focus UI
-      }
+            updateFocusDisplay(null);
+        }
 
-      loadStats();
-      loadCategories();
+        loadStats();
+        loadCategories();
     </script>
-  </body>
+</body>
 </html>
