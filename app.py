@@ -1,10 +1,11 @@
-# app_server.py - Lightweight version for Vercel deployment
+# app_server.py - Vercel version using Hugging Face Inference API
 from dotenv import load_dotenv
 load_dotenv()
 
 import os
 import uuid
 import json
+import requests
 from flask import Flask, request, jsonify, session
 from memory import ConversationMemory
 from pinecone import Pinecone
@@ -13,33 +14,77 @@ from groq import Groq
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
-print("🚀 Starting lightweight RAG server...")
+print("🚀 Starting lightweight RAG server with Hugging Face Inference API...")
 
-# Initialize Pinecone
+# ===== CONFIGURATION =====
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_HOST = os.getenv("PINECONE_INDEX_HOST")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "knowledge-brain")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_CHAT_MODEL", "mixtral-8x7b-32768")
 
-if not PINECONE_API_KEY or not PINECONE_INDEX_HOST:
-    raise RuntimeError("Missing Pinecone configuration")
+# Hugging Face Inference API Configuration
+HF_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
+HF_MODEL = os.getenv("HF_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+HF_API_URL = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{HF_MODEL}"
 
+if not HF_API_KEY:
+    print("⚠️ HUGGINGFACE_API_KEY not set. Please add it to your .env file.")
+    print("   Get your free token at: https://huggingface.co/settings/tokens")
+
+# ===== INITIALIZE CLIENTS =====
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(host=PINECONE_INDEX_HOST)
+groq_client = Groq(api_key=GROQ_API_KEY)
 
-# Initialize Groq
-groq_api_key = os.getenv("GROQ_API_KEY")
-if not groq_api_key:
-    raise RuntimeError("GROQ_API_KEY not set")
+# ===== EMBEDDING FUNCTION (Uses Hugging Face API) =====
+def get_embedding(text: str):
+    """Get embedding using Hugging Face Inference API"""
+    try:
+        headers = {
+            "Authorization": f"Bearer {HF_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        # Truncate text if too long (some models have token limits)
+        if len(text) > 8000:
+            text = text[:8000]
+        
+        response = requests.post(
+            HF_API_URL,
+            headers=headers,
+            json={"inputs": text},
+            timeout=30
+        )
+        
+        # Check for rate limiting
+        if response.status_code == 429:
+            print("⚠️ Rate limit exceeded. Waiting 5 seconds...")
+            import time
+            time.sleep(5)
+            return get_embedding(text)  # Retry
+        
+        response.raise_for_status()
+        embedding = response.json()
+        
+        # The API returns a list of floats
+        if isinstance(embedding, list) and len(embedding) > 0:
+            return embedding
+        else:
+            raise Exception("Invalid embedding response format")
+            
+    except requests.exceptions.Timeout:
+        raise Exception("Embedding request timed out. Please try again.")
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Embedding API error: {e}")
+    except Exception as e:
+        print(f"Embedding error: {e}")
+        raise
 
-groq_client = Groq(api_key=groq_api_key)
-GROQ_MODEL = os.getenv("GROQ_CHAT_MODEL", "mixtral-8x7b-32768")
-GROQ_EMBEDDING_MODEL = os.getenv("GROQ_EMBEDDING_MODEL", "text-embedding-3-small")
-
-# Load document metadata (generated during local ingestion)
+# ===== LOAD METADATA =====
 def load_document_metadata():
     """Load document metadata from JSON file"""
     try:
-        # Try multiple possible locations
         possible_paths = [
             "./brain_metadata.json",
             "brain_metadata.json",
@@ -68,20 +113,9 @@ def get_all_filenames():
 def get_document_count():
     return len(documents_metadata)
 
-def get_embedding(text: str):
-    """Get embedding using Groq"""
-    try:
-        response = groq_client.embeddings.create(
-            model=GROQ_EMBEDDING_MODEL,
-            input=text
-        )
-        return response.data[0].embedding
-    except Exception as e:
-        print(f"Embedding error: {e}")
-        raise
-
+# ===== PINECONE SEARCH =====
 def search_pinecone(query: str, top_k: int = 5):
-    """Search Pinecone"""
+    """Search Pinecone using Hugging Face embeddings"""
     try:
         query_embedding = get_embedding(query)
         results = index.query(
@@ -94,6 +128,7 @@ def search_pinecone(query: str, top_k: int = 5):
         print(f"Search error: {e}")
         raise
 
+# ===== GROQ RESPONSE =====
 def generate_response(query: str, context: str):
     """Generate response using Groq"""
     try:
@@ -102,7 +137,8 @@ def generate_response(query: str, context: str):
             messages=[
                 {"role": "system", "content": """You are a helpful assistant that answers questions based on the provided context.
 If the context doesn't contain the answer, say "I could not find that information in the documents."
-Be concise and accurate. Use the context to support your answers."""},
+Be concise and accurate. Use the context to support your answers.
+Always cite the source document when possible."""},
                 {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
             ],
             temperature=0.3,
@@ -115,7 +151,7 @@ Be concise and accurate. Use the context to support your answers."""},
 
 memory = ConversationMemory()
 
-# ===== WIDGET ROUTE WITH INLINE CODE =====
+# ===== WIDGET ROUTE =====
 @app.route('/widget.js')
 def serve_widget():
     """Serve the widget JavaScript - inline version"""
@@ -382,6 +418,8 @@ def home():
         "documents_loaded": doc_count,
         "pinecone_connected": True,
         "groq_connected": True,
+        "embedding_provider": "Hugging Face Inference API",
+        "embedding_model": HF_MODEL,
         "message": f"{doc_count} documents loaded" if doc_count > 0 else "No documents loaded yet. Please run ingestion locally."
     })
 
@@ -392,7 +430,8 @@ def health():
         "status": "healthy",
         "documents": get_document_count(),
         "pinecone_connected": True,
-        "groq_connected": True
+        "groq_connected": True,
+        "embedding_provider": "Hugging Face Inference API"
     })
 
 @app.route("/api/stats", methods=["GET"])
@@ -408,7 +447,9 @@ def stats():
             "total_chunks": vector_count,
             "documents_loaded": doc_count > 0,
             "documents_list": get_all_filenames() if doc_count > 0 else [],
-            "ingestion_status": "complete" if doc_count > 0 else "pending"
+            "ingestion_status": "complete" if doc_count > 0 else "pending",
+            "embedding_provider": "Hugging Face Inference API",
+            "embedding_model": HF_MODEL
         })
     except Exception as e:
         return jsonify({
@@ -432,6 +473,14 @@ def list_documents():
         "total": len(docs)
     })
 
+@app.route("/api/categories", methods=["GET"])
+def categories():
+    """Get all categories"""
+    cats = set()
+    for meta in documents_metadata.values():
+        cats.add(meta.get("category", "general"))
+    return jsonify({"categories": sorted(list(cats))})
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
     """Main chat endpoint"""
@@ -452,8 +501,25 @@ def chat():
             })
 
         # Search Pinecone
-        matches = search_pinecone(question, top_k=5)
-        
+        try:
+            matches = search_pinecone(question, top_k=5)
+        except Exception as e:
+            # Handle embedding errors gracefully
+            error_msg = str(e)
+            if "429" in error_msg:
+                return jsonify({
+                    "answer": "⚠️ Rate limit exceeded. Please wait a moment and try again.",
+                    "sources": [],
+                    "error": "rate_limit"
+                })
+            if "401" in error_msg or "403" in error_msg:
+                return jsonify({
+                    "answer": "⚠️ Invalid Hugging Face API key. Please check your HUGGINGFACE_API_KEY environment variable.",
+                    "sources": [],
+                    "error": "invalid_api_key"
+                })
+            raise
+
         if not matches:
             return jsonify({
                 "answer": "I could not find relevant information in the knowledge base.",
@@ -500,7 +566,7 @@ def chat():
         print(f"Chat error: {e}")
         return jsonify({
             "error": str(e),
-            "answer": "An error occurred while processing your request."
+            "answer": f"An error occurred: {str(e)}"
         }), 500
 
 @app.route("/api/conversation/<session_id>", methods=["DELETE"])
@@ -511,20 +577,11 @@ def clear_conversation(session_id):
 
 @app.route("/api/focus", methods=["POST"])
 def set_focus():
-    """Set focus on a specific document (placeholder)"""
+    """Set focus on a specific document"""
     data = request.get_json()
     session_id = data.get("session_id", "default")
     filename = data.get("filename", None)
-    # Store focus in memory (simplified)
     return jsonify({"focus": filename})
-
-@app.route("/api/categories", methods=["GET"])
-def categories():
-    """Get all categories"""
-    cats = set()
-    for meta in documents_metadata.values():
-        cats.add(meta.get("category", "general"))
-    return jsonify({"categories": sorted(list(cats))})
 
 @app.route("/widget-demo")
 def widget_demo():
@@ -552,6 +609,7 @@ def widget_demo():
         h1 { font-size: 2rem; margin-bottom: 10px; }
         p { color: #94a3b8; }
         .status { color: #4ade80; }
+        .subtitle { font-size: 0.8rem; color: #64748b; margin-top: 20px; }
     </style>
 </head>
 <body>
@@ -559,9 +617,7 @@ def widget_demo():
         <h1>🧠 Knowledge Brain Chat</h1>
         <p class="status">✅ Widget is ready</p>
         <p>Click the chat bubble in the bottom-right corner to start asking questions!</p>
-        <p style="font-size: 0.8rem; color: #64748b; margin-top: 20px;">
-            Powered by Pinecone + Groq
-        </p>
+        <p class="subtitle">Powered by Pinecone + Groq + Hugging Face</p>
     </div>
     <script>
         window.CHATBOT_API_URL = window.location.origin;
@@ -576,8 +632,9 @@ def widget_demo():
 """, 200, {'Content-Type': 'text/html'}
 
 if __name__ == "__main__":
-    print("\n🚀 Pinecone RAG Chatbot: http://127.0.0.1:5000")
+    print("\n🚀 Pinecone RAG Chatbot with Hugging Face Inference API")
     print(f"📚 Documents loaded: {get_document_count()}")
+    print(f"🔗 Embedding model: {HF_MODEL}")
     print("💬 Widget available at: /widget.js")
     print("🧪 Demo page at: /widget-demo")
     app.run(debug=False, host="0.0.0.0", port=5000)
