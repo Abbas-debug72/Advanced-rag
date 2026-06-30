@@ -1,4 +1,4 @@
-# app_server.py - Vercel version with fallback embedding endpoints
+# app_server.py - Fixed Hugging Face Inference API
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -15,7 +15,7 @@ from groq import Groq
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
-print("🚀 Starting lightweight RAG server with Hugging Face Inference API...")
+print("🚀 Starting RAG server with Hugging Face Inference API...")
 
 # ===== CONFIGURATION =====
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
@@ -28,16 +28,13 @@ GROQ_MODEL = os.getenv("GROQ_CHAT_MODEL", "mixtral-8x7b-32768")
 HF_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 HF_MODEL = os.getenv("HF_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
-# Multiple fallback endpoints
-HF_ENDPOINTS = [
-    f"https://api-inference.huggingface.co/models/{HF_MODEL}",
-    f"https://api-inference.huggingface.co/pipeline/feature-extraction/{HF_MODEL}",
-    f"https://huggingface.co/api/models/{HF_MODEL}",
-]
+# CORRECT: Use the inference API endpoint
+HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+
+print(f"🔗 Hugging Face API URL: {HF_API_URL}")
 
 if not HF_API_KEY:
-    print("⚠️ HUGGINGFACE_API_KEY not set. Please add it to your .env file.")
-    print("   Get your free token at: https://huggingface.co/settings/tokens")
+    print("⚠️ HUGGINGFACE_API_KEY not set. Get your free token at: https://huggingface.co/settings/tokens")
 
 # ===== CORS HEADERS =====
 @app.after_request
@@ -52,82 +49,72 @@ pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(host=PINECONE_INDEX_HOST)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# ===== EMBEDDING FUNCTION WITH FALLBACK =====
+# ===== EMBEDDING FUNCTION =====
 def get_embedding(text: str):
-    """Get embedding using Hugging Face Inference API with fallback endpoints"""
+    """Get embedding using Hugging Face Inference API"""
     if not HF_API_KEY:
-        raise Exception("HUGGINGFACE_API_KEY not set. Please add it to your environment variables.")
+        raise Exception("HUGGINGFACE_API_KEY not set")
     
-    # Truncate text if too long
     if len(text) > 8000:
         text = text[:8000]
     
-    # Try each endpoint
-    last_error = None
-    for endpoint in HF_ENDPOINTS:
-        try:
-            print(f"🔄 Trying endpoint: {endpoint}")
-            
-            headers = {
-                "Authorization": f"Bearer {HF_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            
-            # Different endpoints expect different payload formats
-            if "pipeline" in endpoint:
-                payload = {"inputs": text}
-            else:
-                payload = {"inputs": text}
-            
+    headers = {
+        "Authorization": f"Bearer {HF_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    # The inference API expects this format
+    payload = {
+        "inputs": text,
+        "parameters": {"wait_for_model": True}  # Wait if model is loading
+    }
+    
+    try:
+        print(f"🔄 Calling Hugging Face API: {HF_API_URL}")
+        response = requests.post(
+            HF_API_URL,
+            headers=headers,
+            json=payload,
+            timeout=120  # Longer timeout for model loading
+        )
+        
+        # Handle model loading (503 means model is loading)
+        if response.status_code == 503:
+            print("⏳ Model is loading. Waiting 10 seconds...")
+            time.sleep(10)
+            # Retry once
             response = requests.post(
-                endpoint,
+                HF_API_URL,
                 headers=headers,
                 json=payload,
-                timeout=60  # Increased timeout
+                timeout=120
             )
-            
-            # Check for rate limiting
-            if response.status_code == 429:
-                print("⚠️ Rate limit hit. Waiting 5 seconds...")
-                time.sleep(5)
-                continue
-                
-            if response.status_code == 503:
-                print("⚠️ Service unavailable. Model may be loading. Waiting 10 seconds...")
-                time.sleep(10)
-                continue
-            
-            response.raise_for_status()
-            data = response.json()
-            
-            # Handle different response formats
-            if isinstance(data, list):
-                if isinstance(data[0], list):
-                    return data[0]  # Batch response
-                return data  # Single embedding
-            elif isinstance(data, dict) and 'error' in data:
-                raise Exception(f"API Error: {data['error']}")
-            else:
-                return data
-                
-        except requests.exceptions.Timeout:
-            print(f"⏱️ Timeout on endpoint: {endpoint}")
-            last_error = "Request timed out"
-            continue
-        except requests.exceptions.ConnectionError:
-            print(f"🔌 Connection error on endpoint: {endpoint}")
-            last_error = "Connection error"
-            continue
-        except Exception as e:
-            print(f"❌ Error on endpoint {endpoint}: {e}")
-            last_error = str(e)
-            continue
-    
-    raise Exception(f"All endpoints failed. Last error: {last_error}")
+        
+        if response.status_code == 429:
+            print("⚠️ Rate limit hit. Waiting 10 seconds...")
+            time.sleep(10)
+            return get_embedding(text)  # Retry
+        
+        response.raise_for_status()
+        data = response.json()
+        
+        # The API returns a list of floats for feature extraction
+        if isinstance(data, list):
+            if isinstance(data[0], list):
+                return data[0]  # Batch response
+            return data  # Single embedding
+        
+        raise Exception(f"Unexpected response format: {type(data)}")
+        
+    except requests.exceptions.Timeout:
+        raise Exception("Request timed out. Please try again.")
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"API request failed: {e}")
+    except Exception as e:
+        raise Exception(f"Embedding error: {e}")
 
 # ===== LOAD METADATA =====
 def load_document_metadata():
-    """Load document metadata from JSON file"""
     try:
         possible_paths = [
             "./brain_metadata.json",
@@ -135,15 +122,13 @@ def load_document_metadata():
             "/var/task/brain_metadata.json",
             os.path.join(os.path.dirname(__file__), "brain_metadata.json")
         ]
-        
         for path in possible_paths:
             if os.path.exists(path):
                 with open(path, 'r') as f:
                     data = json.load(f)
                     print(f"✅ Loaded metadata from {path}: {len(data)} documents")
                     return data
-        
-        print("⚠️ No metadata file found. Please run ingestion locally.")
+        print("⚠️ No metadata file found.")
         return {}
     except Exception as e:
         print(f"⚠️ Error loading metadata: {e}")
@@ -159,7 +144,6 @@ def get_document_count():
 
 # ===== PINECONE SEARCH =====
 def search_pinecone(query: str, top_k: int = 5):
-    """Search Pinecone using Hugging Face embeddings"""
     try:
         query_embedding = get_embedding(query)
         results = index.query(
@@ -174,15 +158,13 @@ def search_pinecone(query: str, top_k: int = 5):
 
 # ===== GROQ RESPONSE =====
 def generate_response(query: str, context: str):
-    """Generate response using Groq"""
     try:
         response = groq_client.chat.completions.create(
             model=GROQ_MODEL,
             messages=[
                 {"role": "system", "content": """You are a helpful assistant that answers questions based on the provided context.
 If the context doesn't contain the answer, say "I could not find that information in the documents."
-Be concise and accurate. Use the context to support your answers.
-Always cite the source document when possible."""},
+Be concise and accurate. Use the context to support your answers."""},
                 {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
             ],
             temperature=0.3,
@@ -198,9 +180,8 @@ memory = ConversationMemory()
 # ===== WIDGET ROUTE =====
 @app.route('/widget.js')
 def serve_widget():
-    """Serve the widget JavaScript - inline version"""
     widget_code = """
-// Chat Widget - Knowledge Brain (Inline Version)
+// Chat Widget - Knowledge Brain
 (function() {
     const CONFIG = {
         apiUrl: window.CHATBOT_API_URL || window.location.origin,
@@ -454,7 +435,6 @@ def serve_widget():
 
 @app.route("/")
 def home():
-    """Home endpoint"""
     doc_count = get_document_count()
     return jsonify({
         "status": "ok",
@@ -464,71 +444,35 @@ def home():
         "groq_connected": True,
         "embedding_provider": "Hugging Face Inference API",
         "embedding_model": HF_MODEL,
-        "message": f"{doc_count} documents loaded" if doc_count > 0 else "No documents loaded yet. Please run ingestion locally."
+        "message": f"{doc_count} documents loaded" if doc_count > 0 else "No documents loaded yet."
     })
 
 @app.route("/api/health", methods=["GET"])
 def health():
-    """Health check"""
     return jsonify({
         "status": "healthy",
         "documents": get_document_count(),
         "pinecone_connected": True,
-        "groq_connected": True,
-        "embedding_provider": "Hugging Face Inference API"
+        "groq_connected": True
     })
 
 @app.route("/api/stats", methods=["GET"])
 def stats():
-    """Get stats about the knowledge base"""
     try:
         stats = index.describe_index_stats()
-        vector_count = stats.get('total_vector_count', 0)
-        doc_count = get_document_count()
-        
         return jsonify({
-            "total_documents": doc_count,
-            "total_chunks": vector_count,
-            "documents_loaded": doc_count > 0,
-            "documents_list": get_all_filenames() if doc_count > 0 else [],
-            "ingestion_status": "complete" if doc_count > 0 else "pending",
+            "total_documents": get_document_count(),
+            "total_chunks": stats.get('total_vector_count', 0),
+            "documents_loaded": get_document_count() > 0,
+            "ingestion_status": "complete" if get_document_count() > 0 else "pending",
             "embedding_provider": "Hugging Face Inference API",
             "embedding_model": HF_MODEL
         })
     except Exception as e:
-        return jsonify({
-            "error": str(e),
-            "total_documents": get_document_count()
-        }), 500
-
-@app.route("/api/documents", methods=["GET"])
-def list_documents():
-    """List all documents in the knowledge base"""
-    docs = []
-    for fname, meta in documents_metadata.items():
-        docs.append({
-            "filename": fname,
-            "pages": meta.get("pages", 0),
-            "chunks": meta.get("chunks", 0),
-            "category": meta.get("category", "general")
-        })
-    return jsonify({
-        "documents": docs,
-        "total": len(docs)
-    })
-
-@app.route("/api/categories", methods=["GET"])
-def categories():
-    """Get all categories"""
-    cats = set()
-    for meta in documents_metadata.values():
-        cats.add(meta.get("category", "general"))
-    return jsonify({"categories": sorted(list(cats))})
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/chat", methods=["POST", "OPTIONS"])
 def chat():
-    """Main chat endpoint"""
-    # Handle preflight OPTIONS request
     if request.method == "OPTIONS":
         response = jsonify({"status": "ok"})
         response.headers.add('Access-Control-Allow-Origin', '*')
@@ -539,26 +483,15 @@ def chat():
     try:
         print("📨 Chat request received")
         
-        # Check content type
         if not request.is_json:
-            print(f"❌ Invalid content type: {request.content_type}")
             return jsonify({
                 "error": "Content-Type must be application/json",
-                "answer": "Please send JSON data with Content-Type: application/json"
+                "answer": "Please send JSON data"
             }), 400
         
-        # Parse JSON with error handling
-        try:
-            data = request.get_json(force=True, silent=True)
-        except Exception as e:
-            print(f"❌ JSON parse error: {e}")
-            return jsonify({
-                "error": "Invalid JSON format",
-                "answer": "Please send valid JSON data"
-            }), 400
+        data = request.get_json(silent=True)
         
         if not data:
-            print("❌ No data received")
             return jsonify({
                 "error": "No data received",
                 "answer": "Please send a question in JSON format"
@@ -567,63 +500,48 @@ def chat():
         question = data.get("question", "").strip()
         session_id = data.get("session_id", "default")
         
-        print(f"📨 Question: {question}")
-        print(f"📨 Session ID: {session_id}")
-
         if not question:
             return jsonify({
                 "error": "Question required",
                 "answer": "Please provide a question"
             }), 400
 
-        # Check if documents are loaded
-        doc_count = get_document_count()
-        if doc_count == 0:
+        if get_document_count() == 0:
             return jsonify({
                 "answer": "⚠️ No documents have been ingested yet. Please run `python ingest_all.py` locally first.",
-                "sources": [],
-                "documents_loaded": False
+                "sources": []
             })
 
         # Get embedding
         try:
-            print("🔄 Getting embedding from Hugging Face...")
             query_embedding = get_embedding(question)
-            print(f"✅ Got embedding: {len(query_embedding)} dimensions")
         except Exception as e:
             error_msg = str(e)
-            print(f"❌ Embedding error: {error_msg}")
             if "429" in error_msg:
                 return jsonify({
                     "answer": "⚠️ Rate limit exceeded. Please wait a moment and try again.",
-                    "sources": [],
-                    "error": "rate_limit"
+                    "sources": []
                 })
             elif "401" in error_msg or "403" in error_msg:
                 return jsonify({
                     "answer": "⚠️ Invalid Hugging Face API key. Please check your environment variables.",
-                    "sources": [],
-                    "error": "invalid_api_key"
+                    "sources": []
                 })
             else:
                 return jsonify({
                     "answer": f"⚠️ Embedding error: {error_msg[:200]}",
-                    "sources": [],
-                    "error": "embedding_error"
+                    "sources": []
                 })
 
         # Search Pinecone
         try:
-            print("🔄 Searching Pinecone...")
             results = index.query(
                 vector=query_embedding,
                 top_k=5,
                 include_metadata=True
             )
             matches = results.get('matches', [])
-            print(f"✅ Found {len(matches)} matches")
         except Exception as e:
-            print(f"❌ Pinecone error: {e}")
             return jsonify({
                 "answer": f"⚠️ Database error: {str(e)[:100]}",
                 "sources": []
@@ -635,7 +553,6 @@ def chat():
                 "sources": []
             })
 
-        # Build context
         context_parts = []
         sources = []
         for match in matches:
@@ -644,10 +561,7 @@ def chat():
                 source_file = match.get('metadata', {}).get('source_file', 'unknown')
                 if text:
                     context_parts.append(text)
-                    sources.append({
-                        'document': source_file,
-                        'score': match.get('score', 0)
-                    })
+                    sources.append({'document': source_file})
 
         if not context_parts:
             return jsonify({
@@ -657,9 +571,7 @@ def chat():
 
         context = "\n\n---\n\n".join(context_parts[:3])
         
-        # Generate response
         try:
-            print("🔄 Generating response with Groq...")
             response = groq_client.chat.completions.create(
                 model=GROQ_MODEL,
                 messages=[
@@ -670,9 +582,7 @@ def chat():
                 max_tokens=500
             )
             answer = response.choices[0].message.content
-            print(f"✅ Generated response: {answer[:100]}...")
         except Exception as e:
-            print(f"❌ Groq error: {e}")
             return jsonify({
                 "answer": f"⚠️ Generation error: {str(e)[:100]}",
                 "sources": sources[:3]
@@ -698,53 +608,28 @@ def chat():
 
 @app.route("/api/conversation/<session_id>", methods=["DELETE"])
 def clear_conversation(session_id):
-    """Clear conversation history"""
     memory.clear_session(session_id)
     return jsonify({"success": True})
 
-@app.route("/api/focus", methods=["POST"])
-def set_focus():
-    """Set focus on a specific document"""
-    data = request.get_json()
-    session_id = data.get("session_id", "default")
-    filename = data.get("filename", None)
-    return jsonify({"focus": filename})
-
 @app.route("/widget-demo")
 def widget_demo():
-    """Serve a demo page with the widget"""
     return """
 <!DOCTYPE html>
 <html>
 <head>
     <title>Chat Widget Demo</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            padding: 40px;
-            background: #1a1a2e;
-            color: white;
-            text-align: center;
-        }
-        .container {
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 40px;
-            background: #16213e;
-            border-radius: 16px;
-        }
-        h1 { font-size: 2rem; margin-bottom: 10px; }
-        p { color: #94a3b8; }
+        body { font-family: Arial; padding: 40px; background: #1a1a2e; color: white; text-align: center; }
+        .container { max-width: 600px; margin: 0 auto; padding: 40px; background: #16213e; border-radius: 16px; }
+        h1 { font-size: 2rem; }
         .status { color: #4ade80; }
-        .subtitle { font-size: 0.8rem; color: #64748b; margin-top: 20px; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🧠 Knowledge Brain Chat</h1>
         <p class="status">✅ Widget is ready</p>
-        <p>Click the chat bubble in the bottom-right corner to start asking questions!</p>
-        <p class="subtitle">Powered by Pinecone + Groq + Hugging Face</p>
+        <p>Click the chat bubble in the bottom-right corner!</p>
     </div>
     <script>
         window.CHATBOT_API_URL = window.location.origin;
@@ -756,12 +641,10 @@ def widget_demo():
     <script src="/widget.js"></script>
 </body>
 </html>
-""", 200, {'Content-Type': 'text/html'}
+"""
 
 if __name__ == "__main__":
-    print("\n🚀 Pinecone RAG Chatbot with Hugging Face Inference API")
-    print(f"📚 Documents loaded: {get_document_count()}")
-    print(f"🔗 Embedding model: {HF_MODEL}")
-    print("💬 Widget available at: /widget.js")
-    print("🧪 Demo page at: /widget-demo")
+    print("\n🚀 RAG Chatbot with Hugging Face Inference API")
+    print(f"📚 Documents: {get_document_count()}")
+    print(f"🔗 HF Model: {HF_MODEL}")
     app.run(debug=False, host="0.0.0.0", port=5000)
