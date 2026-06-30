@@ -1,4 +1,4 @@
-# app_server.py - Vercel version with different Hugging Face model
+# app_server.py - Vercel version using Railway embeddings server
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -6,8 +6,6 @@ import os
 import uuid
 import json
 import requests
-import time
-import socket
 from flask import Flask, request, jsonify, session, make_response
 from memory import ConversationMemory
 from pinecone import Pinecone
@@ -16,7 +14,7 @@ from groq import Groq
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
-print("🚀 Starting RAG server with Hugging Face Inference API...")
+print("🚀 Starting RAG server with Railway embeddings server...")
 
 # ===== CONFIGURATION =====
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
@@ -25,26 +23,15 @@ PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "knowledge-brain")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = os.getenv("GROQ_CHAT_MODEL", "mixtral-8x7b-32768")
 
-# Hugging Face Inference API Configuration - TRY DIFFERENT MODELS
-HF_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
+# Railway Embeddings Server URL
+EMBEDDING_SERVER_URL = os.getenv("EMBEDDING_SERVER_URL", "https://your-embedding-server.railway.app")
 
-# Try these models (the API might work with some, not others)
-HF_MODELS = [
-    "sentence-transformers/all-MiniLM-L12-v2",  # Larger model
-    "BAAI/bge-base-en-v1.5",                     # Alternative model
-    "intfloat/e5-small-v2",                      # Another alternative
-    "sentence-transformers/all-MiniLM-L6-v2",    # Original model
-]
+print(f"🔗 Embeddings server: {EMBEDDING_SERVER_URL}")
 
-# Use the first model that works
-HF_MODEL = os.getenv("HF_EMBEDDING_MODEL", HF_MODELS[0])
-HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
-
-print(f"🔗 Hugging Face API URL: {HF_API_URL}")
-print(f"📚 Using model: {HF_MODEL}")
-
-if not HF_API_KEY:
-    print("⚠️ HUGGINGFACE_API_KEY not set. Get your free token at: https://huggingface.co/settings/tokens")
+if not PINECONE_API_KEY:
+    print("⚠️ PINECONE_API_KEY not set")
+if not GROQ_API_KEY:
+    print("⚠️ GROQ_API_KEY not set")
 
 # ===== CORS HEADERS =====
 @app.after_request
@@ -59,117 +46,40 @@ pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(host=PINECONE_INDEX_HOST)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# ===== DNS TEST ENDPOINT =====
-@app.route("/api/dns-test", methods=["GET"])
-def dns_test():
-    """Test DNS resolution for Hugging Face"""
-    try:
-        ip = socket.gethostbyname("api-inference.huggingface.co")
-        return jsonify({
-            "host": "api-inference.huggingface.co",
-            "ip": ip,
-            "status": "resolved"
-        })
-    except Exception as e:
-        return jsonify({
-            "host": "api-inference.huggingface.co",
-            "error": str(e),
-            "status": "failed"
-        })
-
-# ===== EMBEDDING FUNCTION WITH MODEL FALLBACK =====
+# ===== EMBEDDING FUNCTION (Calls Railway server) =====
 def get_embedding(text: str):
-    """Get embedding using Hugging Face Inference API with model fallback"""
-    if not HF_API_KEY:
-        raise Exception("HUGGINGFACE_API_KEY not set")
-    
-    if len(text) > 8000:
-        text = text[:8000]
-    
-    headers = {
-        "Authorization": f"Bearer {HF_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "inputs": text,
-        "parameters": {"wait_for_model": True}
-    }
-    
-    # Try each model in sequence
-    last_error = None
-    models_to_try = [
-        os.getenv("HF_EMBEDDING_MODEL", HF_MODELS[0]),
-        HF_MODELS[1],
-        HF_MODELS[2],
-        HF_MODELS[3],
-    ]
-    
-    for model in models_to_try:
-        try:
-            url = f"https://api-inference.huggingface.co/models/{model}"
-            print(f"🔄 Trying model: {model}")
-            
-            response = requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=60
-            )
-            
-            # If model is loading, wait and retry
-            if response.status_code == 503:
-                print(f"⏳ Model {model} is loading. Waiting 10 seconds...")
-                time.sleep(10)
-                response = requests.post(
-                    url,
-                    headers=headers,
-                    json=payload,
-                    timeout=60
-                )
-            
-            if response.status_code == 429:
-                print("⚠️ Rate limit hit. Waiting 10 seconds...")
-                time.sleep(10)
-                continue
-                
-            if response.status_code == 404:
-                print(f"⚠️ Model {model} not found. Trying next...")
-                continue
-                
-            response.raise_for_status()
-            data = response.json()
-            
-            # The API returns a list of floats for feature extraction
-            if isinstance(data, list):
-                if isinstance(data[0], list):
-                    print(f"✅ Got embedding from {model} (batch)")
-                    return data[0]
-                print(f"✅ Got embedding from {model}")
-                return data
-            
-            raise Exception(f"Unexpected response format: {type(data)}")
-            
-        except requests.exceptions.Timeout:
-            print(f"⏱️ Timeout with model {model}")
-            last_error = "Request timed out"
-            continue
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Request error with model {model}: {e}")
-            last_error = str(e)
-            continue
-        except Exception as e:
-            print(f"❌ Error with model {model}: {e}")
-            last_error = str(e)
-            continue
-    
-    # If we get here, all models failed
-    if "401" in str(last_error) or "403" in str(last_error):
-        raise Exception("Invalid Hugging Face API key. Please check your HUGGINGFACE_API_KEY environment variable.")
-    elif "429" in str(last_error):
-        raise Exception("Rate limit exceeded. Please wait and try again.")
-    else:
-        raise Exception(f"All models failed. Last error: {last_error}")
+    """Get embedding from Railway embeddings server"""
+    try:
+        if len(text) > 8000:
+            text = text[:8000]
+        
+        response = requests.post(
+            f"{EMBEDDING_SERVER_URL}/embed_single",
+            json={"text": text},
+            timeout=30
+        )
+        
+        if response.status_code == 503:
+            print("⚠️ Embeddings server is starting up. Waiting 5 seconds...")
+            import time
+            time.sleep(5)
+            return get_embedding(text)  # Retry
+        
+        response.raise_for_status()
+        data = response.json()
+        
+        embedding = data.get("embedding")
+        if not embedding:
+            raise Exception("No embedding returned")
+        
+        return embedding
+        
+    except requests.exceptions.ConnectionError:
+        raise Exception(f"Embeddings server not reachable at {EMBEDDING_SERVER_URL}")
+    except requests.exceptions.Timeout:
+        raise Exception("Embeddings server request timed out")
+    except Exception as e:
+        raise Exception(f"Embedding error: {e}")
 
 # ===== LOAD METADATA =====
 def load_document_metadata():
@@ -501,18 +411,32 @@ def home():
         "documents_loaded": doc_count,
         "pinecone_connected": True,
         "groq_connected": True,
-        "embedding_provider": "Hugging Face Inference API",
-        "embedding_model": HF_MODEL,
+        "embedding_provider": "Railway Embeddings Server",
+        "embedding_server": EMBEDDING_SERVER_URL,
         "message": f"{doc_count} documents loaded" if doc_count > 0 else "No documents loaded yet."
     })
 
 @app.route("/api/health", methods=["GET"])
 def health():
+    """Health check endpoint"""
+    # Check if embeddings server is reachable
+    embedding_status = "unknown"
+    try:
+        response = requests.get(f"{EMBEDDING_SERVER_URL}/health", timeout=5)
+        if response.status_code == 200:
+            embedding_status = "healthy"
+        else:
+            embedding_status = "unhealthy"
+    except:
+        embedding_status = "unreachable"
+    
     return jsonify({
         "status": "healthy",
         "documents": get_document_count(),
         "pinecone_connected": True,
-        "groq_connected": True
+        "groq_connected": True,
+        "embedding_server_status": embedding_status,
+        "embedding_server": EMBEDDING_SERVER_URL
     })
 
 @app.route("/api/stats", methods=["GET"])
@@ -524,11 +448,36 @@ def stats():
             "total_chunks": stats.get('total_vector_count', 0),
             "documents_loaded": get_document_count() > 0,
             "ingestion_status": "complete" if get_document_count() > 0 else "pending",
-            "embedding_provider": "Hugging Face Inference API",
-            "embedding_model": HF_MODEL
+            "embedding_provider": "Railway Embeddings Server",
+            "embedding_server": EMBEDDING_SERVER_URL,
+            "embedding_model": "BAAI/bge-small-en-v1.5"
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/documents", methods=["GET"])
+def list_documents():
+    """List all documents in the knowledge base"""
+    docs = []
+    for fname, meta in documents_metadata.items():
+        docs.append({
+            "filename": fname,
+            "pages": meta.get("pages", 0),
+            "chunks": meta.get("chunks", 0),
+            "category": meta.get("category", "general")
+        })
+    return jsonify({
+        "documents": docs,
+        "total": len(docs)
+    })
+
+@app.route("/api/categories", methods=["GET"])
+def categories():
+    """Get all categories"""
+    cats = set()
+    for meta in documents_metadata.values():
+        cats.add(meta.get("category", "general"))
+    return jsonify({"categories": sorted(list(cats))})
 
 @app.route("/api/chat", methods=["POST", "OPTIONS"])
 def chat():
@@ -571,19 +520,14 @@ def chat():
                 "sources": []
             })
 
-        # Get embedding with model fallback
+        # Get embedding from Railway server
         try:
             query_embedding = get_embedding(question)
         except Exception as e:
             error_msg = str(e)
-            if "429" in error_msg:
+            if "unreachable" in error_msg.lower() or "connection" in error_msg.lower():
                 return jsonify({
-                    "answer": "⚠️ Rate limit exceeded. Please wait a moment and try again.",
-                    "sources": []
-                })
-            elif "401" in error_msg or "403" in error_msg:
-                return jsonify({
-                    "answer": "⚠️ Invalid Hugging Face API key. Please check your environment variables.",
+                    "answer": "⚠️ Embeddings server is not reachable. Please check your EMBEDDING_SERVER_URL environment variable.",
                     "sources": []
                 })
             else:
@@ -670,6 +614,13 @@ def clear_conversation(session_id):
     memory.clear_session(session_id)
     return jsonify({"success": True})
 
+@app.route("/api/focus", methods=["POST"])
+def set_focus():
+    data = request.get_json()
+    session_id = data.get("session_id", "default")
+    filename = data.get("filename", None)
+    return jsonify({"focus": filename})
+
 @app.route("/widget-demo")
 def widget_demo():
     return """
@@ -682,13 +633,15 @@ def widget_demo():
         .container { max-width: 600px; margin: 0 auto; padding: 40px; background: #16213e; border-radius: 16px; }
         h1 { font-size: 2rem; }
         .status { color: #4ade80; }
+        .subtitle { font-size: 0.8rem; color: #64748b; margin-top: 20px; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🧠 Knowledge Brain Chat</h1>
         <p class="status">✅ Widget is ready</p>
-        <p>Click the chat bubble in the bottom-right corner!</p>
+        <p>Click the chat bubble in the bottom-right corner to start asking questions!</p>
+        <p class="subtitle">Powered by Pinecone + Groq + Railway Embeddings</p>
     </div>
     <script>
         window.CHATBOT_API_URL = window.location.origin;
@@ -703,7 +656,7 @@ def widget_demo():
 """
 
 if __name__ == "__main__":
-    print("\n🚀 RAG Chatbot with Hugging Face Inference API")
+    print("\n🚀 RAG Chatbot with Railway Embeddings Server")
     print(f"📚 Documents: {get_document_count()}")
-    print(f"🔗 HF Model: {HF_MODEL}")
+    print(f"🔗 Embeddings server: {EMBEDDING_SERVER_URL}")
     app.run(debug=False, host="0.0.0.0", port=5000)
