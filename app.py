@@ -1,4 +1,4 @@
-# app_server.py - Fixed Hugging Face Inference API
+# app_server.py - Vercel version with different Hugging Face model
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -7,6 +7,7 @@ import uuid
 import json
 import requests
 import time
+import socket
 from flask import Flask, request, jsonify, session, make_response
 from memory import ConversationMemory
 from pinecone import Pinecone
@@ -24,14 +25,23 @@ PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "knowledge-brain")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = os.getenv("GROQ_CHAT_MODEL", "mixtral-8x7b-32768")
 
-# Hugging Face Inference API Configuration
+# Hugging Face Inference API Configuration - TRY DIFFERENT MODELS
 HF_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
-HF_MODEL = os.getenv("HF_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
-# CORRECT: Use the inference API endpoint
+# Try these models (the API might work with some, not others)
+HF_MODELS = [
+    "sentence-transformers/all-MiniLM-L12-v2",  # Larger model
+    "BAAI/bge-base-en-v1.5",                     # Alternative model
+    "intfloat/e5-small-v2",                      # Another alternative
+    "sentence-transformers/all-MiniLM-L6-v2",    # Original model
+]
+
+# Use the first model that works
+HF_MODEL = os.getenv("HF_EMBEDDING_MODEL", HF_MODELS[0])
 HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
 
 print(f"🔗 Hugging Face API URL: {HF_API_URL}")
+print(f"📚 Using model: {HF_MODEL}")
 
 if not HF_API_KEY:
     print("⚠️ HUGGINGFACE_API_KEY not set. Get your free token at: https://huggingface.co/settings/tokens")
@@ -49,9 +59,27 @@ pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(host=PINECONE_INDEX_HOST)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# ===== EMBEDDING FUNCTION =====
+# ===== DNS TEST ENDPOINT =====
+@app.route("/api/dns-test", methods=["GET"])
+def dns_test():
+    """Test DNS resolution for Hugging Face"""
+    try:
+        ip = socket.gethostbyname("api-inference.huggingface.co")
+        return jsonify({
+            "host": "api-inference.huggingface.co",
+            "ip": ip,
+            "status": "resolved"
+        })
+    except Exception as e:
+        return jsonify({
+            "host": "api-inference.huggingface.co",
+            "error": str(e),
+            "status": "failed"
+        })
+
+# ===== EMBEDDING FUNCTION WITH MODEL FALLBACK =====
 def get_embedding(text: str):
-    """Get embedding using Hugging Face Inference API"""
+    """Get embedding using Hugging Face Inference API with model fallback"""
     if not HF_API_KEY:
         raise Exception("HUGGINGFACE_API_KEY not set")
     
@@ -63,55 +91,85 @@ def get_embedding(text: str):
         "Content-Type": "application/json"
     }
     
-    # The inference API expects this format
     payload = {
         "inputs": text,
-        "parameters": {"wait_for_model": True}  # Wait if model is loading
+        "parameters": {"wait_for_model": True}
     }
     
-    try:
-        print(f"🔄 Calling Hugging Face API: {HF_API_URL}")
-        response = requests.post(
-            HF_API_URL,
-            headers=headers,
-            json=payload,
-            timeout=120  # Longer timeout for model loading
-        )
-        
-        # Handle model loading (503 means model is loading)
-        if response.status_code == 503:
-            print("⏳ Model is loading. Waiting 10 seconds...")
-            time.sleep(10)
-            # Retry once
+    # Try each model in sequence
+    last_error = None
+    models_to_try = [
+        os.getenv("HF_EMBEDDING_MODEL", HF_MODELS[0]),
+        HF_MODELS[1],
+        HF_MODELS[2],
+        HF_MODELS[3],
+    ]
+    
+    for model in models_to_try:
+        try:
+            url = f"https://api-inference.huggingface.co/models/{model}"
+            print(f"🔄 Trying model: {model}")
+            
             response = requests.post(
-                HF_API_URL,
+                url,
                 headers=headers,
                 json=payload,
-                timeout=120
+                timeout=60
             )
-        
-        if response.status_code == 429:
-            print("⚠️ Rate limit hit. Waiting 10 seconds...")
-            time.sleep(10)
-            return get_embedding(text)  # Retry
-        
-        response.raise_for_status()
-        data = response.json()
-        
-        # The API returns a list of floats for feature extraction
-        if isinstance(data, list):
-            if isinstance(data[0], list):
-                return data[0]  # Batch response
-            return data  # Single embedding
-        
-        raise Exception(f"Unexpected response format: {type(data)}")
-        
-    except requests.exceptions.Timeout:
-        raise Exception("Request timed out. Please try again.")
-    except requests.exceptions.RequestException as e:
-        raise Exception(f"API request failed: {e}")
-    except Exception as e:
-        raise Exception(f"Embedding error: {e}")
+            
+            # If model is loading, wait and retry
+            if response.status_code == 503:
+                print(f"⏳ Model {model} is loading. Waiting 10 seconds...")
+                time.sleep(10)
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                    timeout=60
+                )
+            
+            if response.status_code == 429:
+                print("⚠️ Rate limit hit. Waiting 10 seconds...")
+                time.sleep(10)
+                continue
+                
+            if response.status_code == 404:
+                print(f"⚠️ Model {model} not found. Trying next...")
+                continue
+                
+            response.raise_for_status()
+            data = response.json()
+            
+            # The API returns a list of floats for feature extraction
+            if isinstance(data, list):
+                if isinstance(data[0], list):
+                    print(f"✅ Got embedding from {model} (batch)")
+                    return data[0]
+                print(f"✅ Got embedding from {model}")
+                return data
+            
+            raise Exception(f"Unexpected response format: {type(data)}")
+            
+        except requests.exceptions.Timeout:
+            print(f"⏱️ Timeout with model {model}")
+            last_error = "Request timed out"
+            continue
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Request error with model {model}: {e}")
+            last_error = str(e)
+            continue
+        except Exception as e:
+            print(f"❌ Error with model {model}: {e}")
+            last_error = str(e)
+            continue
+    
+    # If we get here, all models failed
+    if "401" in str(last_error) or "403" in str(last_error):
+        raise Exception("Invalid Hugging Face API key. Please check your HUGGINGFACE_API_KEY environment variable.")
+    elif "429" in str(last_error):
+        raise Exception("Rate limit exceeded. Please wait and try again.")
+    else:
+        raise Exception(f"All models failed. Last error: {last_error}")
 
 # ===== LOAD METADATA =====
 def load_document_metadata():
@@ -164,7 +222,8 @@ def generate_response(query: str, context: str):
             messages=[
                 {"role": "system", "content": """You are a helpful assistant that answers questions based on the provided context.
 If the context doesn't contain the answer, say "I could not find that information in the documents."
-Be concise and accurate. Use the context to support your answers."""},
+Be concise and accurate. Use the context to support your answers.
+Always cite the source document when possible."""},
                 {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
             ],
             temperature=0.3,
@@ -512,7 +571,7 @@ def chat():
                 "sources": []
             })
 
-        # Get embedding
+        # Get embedding with model fallback
         try:
             query_embedding = get_embedding(question)
         except Exception as e:
