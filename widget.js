@@ -1,8 +1,7 @@
-// widget.js - Full chat widget
+// widget.js - Full chat widget with CORS fix
 (function() {
     'use strict';
 
-    // Configuration
     const CONFIG = {
         apiUrl: window.CHATBOT_API_URL || window.location.origin,
         botName: window.CHATBOT_NAME || 'Knowledge Bot',
@@ -18,7 +17,6 @@
     let isOpen = false;
     let isLoading = false;
 
-    // Create widget DOM
     function createWidget() {
         const widget = document.createElement('div');
         widget.id = 'chatbot-widget';
@@ -133,7 +131,6 @@
         `;
         document.body.appendChild(widget);
 
-        // Event listeners
         document.getElementById('chatbot-toggle').addEventListener('click', toggleChat);
         document.getElementById('chatbot-close').addEventListener('click', closeChat);
         document.getElementById('chatbot-clear').addEventListener('click', clearChat);
@@ -143,7 +140,6 @@
         });
     }
 
-    // Toggle chat window
     function toggleChat() {
         isOpen = !isOpen;
         const window = document.getElementById('chatbot-window');
@@ -240,11 +236,23 @@
 
             const res = await fetch(url, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                mode: 'cors',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
                 body: JSON.stringify({ question, session_id: sessionId })
             });
 
             console.log('📨 Response status:', res.status);
+            console.log('📨 Response headers:', res.headers);
+
+            if (!res.ok) {
+                const errorText = await res.text();
+                console.error('❌ Response error:', errorText);
+                throw new Error(`HTTP ${res.status}: ${errorText}`);
+            }
+
             const data = await res.json();
             console.log('📨 Response data:', data);
 
@@ -257,12 +265,18 @@
         } catch (e) {
             console.error('❌ Widget error:', e);
             hideTyping();
-            addMessage('Sorry, an error occurred. Please try again.', 'bot');
+            
+            let errorMsg = 'Sorry, an error occurred. Please try again.';
+            if (e.message === 'Failed to fetch') {
+                errorMsg = '⚠️ Cannot connect to the server. Please check your internet connection.';
+            } else if (e.message.includes('CORS')) {
+                errorMsg = '⚠️ CORS error. Please contact the site administrator.';
+            }
+            addMessage(errorMsg, 'bot');
         }
         isLoading = false;
     }
 
-    // Initialize widget
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', createWidget);
     } else {

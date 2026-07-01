@@ -1,4 +1,4 @@
-# app.py – Pinecone RAG Chatbot (Simple Fallback - No Hugging Face)
+# app.py – Pinecone RAG Chatbot (With sentence-transformers)
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -14,6 +14,7 @@ from flask import Flask, request, jsonify, render_template, session, send_from_d
 from flask_cors import CORS
 from pinecone import Pinecone
 from groq import Groq
+from sentence_transformers import SentenceTransformer
 
 from memory import ConversationMemory
 
@@ -28,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 print("=" * 60)
-print("🚀 APP STARTING (Simple Fallback - No Hugging Face)")
+print("🚀 APP STARTING (With sentence-transformers)")
 print("=" * 60)
 
 app = Flask(__name__)
@@ -69,10 +70,15 @@ if not PINECONE_API_KEY:
 if not GROQ_API_KEY:
     raise RuntimeError("GROQ_API_KEY not set in .env file")
 
+# ===== LOAD EMBEDDING MODEL =====
+print("📥 Loading embedding model (all-MiniLM-L6-v2)...")
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+print("✅ Embedding model loaded")
+
 # ===== INITIALIZE CLIENTS =====
 print("🔗 Connecting to Pinecone...")
 pc = Pinecone(api_key=PINECONE_API_KEY)
-index = pc.Index(host=PINECONE_INDEX_HOST)
+pinecone_index = pc.Index(host=PINECONE_INDEX_HOST)
 print(f"✅ Pinecone connected: {PINECONE_INDEX_NAME}")
 
 print("🔗 Connecting to Groq...")
@@ -111,33 +117,18 @@ def get_all_filenames():
 def get_document_count():
     return len(documents_metadata)
 
-# ===== EMBEDDING FUNCTION (Using Groq) =====
+# ===== EMBEDDING FUNCTION =====
 def get_embedding(text: str):
-    """Get embedding using Groq API"""
+    """Get embedding using sentence-transformers"""
     if len(text) > 8000:
         text = text[:8000]
-    
-    try:
-        response = groq_client.embeddings.create(
-            model="nomic-embed-text-v1_5",
-            input=text
-        )
-        return response.data[0].embedding
-    except Exception as e:
-        print(f"⚠️ Groq embedding error: {e}")
-        # Fallback: use a simple text vector if Groq fails
-        import hashlib
-        hash_bytes = hashlib.sha256(text.encode()).digest()
-        vector = [float(b) / 255.0 for b in hash_bytes[:384]]
-        while len(vector) < 384:
-            vector.append(0.0)
-        return vector[:384]
+    return embedding_model.encode(text).tolist()
 
 # ===== PINECONE SEARCH =====
 def search_pinecone(query: str, top_k: int = 5):
     try:
         query_embedding = get_embedding(query)
-        results = index.query(
+        results = pinecone_index.query(
             vector=query_embedding,
             top_k=top_k,
             include_metadata=True
@@ -198,30 +189,13 @@ def detect_focus_command(question: str):
         return "CLEAR"
     return None
 
-# ===== FORMAT DOCS =====
-def format_docs(matches):
-    parts = []
-    seen = set()
-    for match in matches:
-        src = match.get('metadata', {}).get('source_file', '?')
-        if src in seen:
-            continue
-        seen.add(src)
-        page = match.get('metadata', {}).get('page_number', '?')
-        text = match.get('metadata', {}).get('text', '')
-        if text:
-            parts.append(f"[{src} p{page}]\n{text[:800]}\n")
-    return "\n".join(parts)
-
 # ===== ROUTES =====
 @app.route('/widget.js')
 def serve_widget():
     """Serve the widget JavaScript file"""
-    print("📨 Serving widget.js")
     try:
         return send_from_directory('.', 'widget.js')
     except Exception as e:
-        print(f"⚠️ Error serving widget.js: {e}")
         return """// Chat Widget - Knowledge Brain (Full Version)
 (function() {
     'use strict';
@@ -389,9 +363,7 @@ def serve_widget():
             await fetch(`${CONFIG.apiUrl}/api/conversation/${sessionId}`, { method: 'DELETE' });
             sessionId = 'session_' + Date.now();
             localStorage.setItem('chatbot_session', sessionId);
-        } catch(e) {
-            console.warn('Clear chat error:', e);
-        }
+        } catch(e) {}
         document.getElementById('chatbot-messages').innerHTML = `
             <div class="chatbot-message bot">
                 <div class="chatbot-avatar">${CONFIG.botAvatar}</div>
@@ -456,8 +428,6 @@ def serve_widget():
 
         try {
             const url = `${CONFIG.apiUrl}/api/chat`;
-            console.log('📨 Full URL:', url);
-
             const res = await fetch(url, {
                 method: 'POST',
                 mode: 'cors',
@@ -468,18 +438,7 @@ def serve_widget():
                 body: JSON.stringify({ question, session_id: sessionId })
             });
 
-            console.log('📨 Response status:', res.status);
-            console.log('📨 Response headers:', res.headers);
-
-            if (!res.ok) {
-                const errorText = await res.text();
-                console.error('❌ Response error:', errorText);
-                throw new Error(`HTTP ${res.status}: ${errorText}`);
-            }
-
             const data = await res.json();
-            console.log('📨 Response data:', data);
-
             hideTyping();
             if (data.answer) {
                 addMessage(data.answer, 'bot', data.sources || []);
@@ -489,14 +448,7 @@ def serve_widget():
         } catch (e) {
             console.error('❌ Widget error:', e);
             hideTyping();
-            
-            let errorMsg = 'Sorry, an error occurred. Please try again.';
-            if (e.message === 'Failed to fetch') {
-                errorMsg = '⚠️ Cannot connect to the server. Please check your internet connection.';
-            } else if (e.message.includes('CORS')) {
-                errorMsg = '⚠️ CORS error. Please contact the site administrator.';
-            }
-            addMessage(errorMsg, 'bot');
+            addMessage('Sorry, an error occurred. Please try again.', 'bot');
         }
         isLoading = false;
     }
@@ -510,19 +462,13 @@ def serve_widget():
 
 @app.route("/api/ping", methods=["GET", "POST", "OPTIONS"])
 def ping():
-    """Simple ping endpoint to test if app is responding"""
-    print("📨 PING received - method:", request.method)
     if request.method == "OPTIONS":
         response = jsonify({"status": "ok"})
         response.headers.add('Access-Control-Allow-Origin', '*')
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
         response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         return response
-    return jsonify({
-        "status": "ok",
-        "message": "pong",
-        "method": request.method
-    })
+    return jsonify({"status": "ok", "message": "pong"})
 
 @app.route("/")
 def index():
@@ -533,21 +479,14 @@ def index():
 @app.route("/api/chat", methods=["GET", "POST", "OPTIONS"])
 def chat():
     if request.method == "OPTIONS":
-        print("📨 OPTIONS request received")
         response = jsonify({"status": "ok"})
         response.headers.add('Access-Control-Allow-Origin', '*')
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Requested-With')
         response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        response.headers.add('Access-Control-Max-Age', '3600')
         return response
 
     if request.method == "GET":
-        return jsonify({"error": "Use POST method for chat"}), 405
-
-    print(f"\n{'='*60}")
-    print(f"📨 CHAT REQUEST STARTED at {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'='*60}")
-    start_time = time.time()
+        return jsonify({"error": "Use POST method"}), 405
 
     try:
         if not request.is_json:
@@ -559,43 +498,12 @@ def chat():
 
         question = data.get("question", "").strip()
         session_id = data.get("session_id", session.get("session_id", "default"))
-        category = data.get("category", "all")
-
-        print(f"📨 Question: '{question}'")
-        print(f"📨 Session ID: {session_id}")
 
         if not question:
             return jsonify({"answer": "⚠️ Please provide a question."}), 400
 
-        # Check focus commands
-        focus_file = session_focus.get(session_id)
-        focus_cmd = detect_focus_command(question)
-
-        if focus_cmd == "CLEAR":
-            session_focus.pop(session_id, None)
-            memory.add_message(session_id, "user", question)
-            memory.add_message(session_id, "assistant", "✅ Document filter cleared.")
-            return jsonify({"answer": "✅ Document filter cleared.", "sources": [], "focus": None})
-
-        if focus_cmd is not None:
-            all_files = get_all_filenames()
-            if focus_cmd in all_files:
-                session_focus[session_id] = focus_cmd
-                msg = f"✅ Now focusing on **{focus_cmd}** only."
-            else:
-                msg = f"❌ Document `{focus_cmd}` not found. Available: {', '.join(all_files)}"
-            memory.add_message(session_id, "user", question)
-            memory.add_message(session_id, "assistant", msg)
-            return jsonify({"answer": msg, "sources": [], "focus": session_focus.get(session_id)})
-
         # Search Pinecone
-        try:
-            print("📨 Searching Pinecone...")
-            matches = search_pinecone(question, top_k=5)
-            print(f"📨 Found {len(matches)} matches")
-        except Exception as e:
-            print(f"❌ Search error: {e}")
-            return jsonify({"answer": f"⚠️ Search error: {str(e)[:100]}"}), 500
+        matches = search_pinecone(question, top_k=5)
 
         if not matches:
             return jsonify({
@@ -626,54 +534,29 @@ def chat():
         context = "\n\n---\n\n".join(context_parts[:3])
 
         # Generate response
-        try:
-            print("📨 Generating response with Groq...")
-            answer = generate_response(question, context)
-            print(f"📨 Response length: {len(answer)}")
-        except Exception as e:
-            print(f"❌ Generation error: {e}")
-            return jsonify({"answer": f"⚠️ Generation error: {str(e)[:100]}"}), 500
+        answer = generate_response(question, context)
 
         memory.add_message(session_id, "user", question)
         memory.add_message(session_id, "assistant", answer)
 
-        elapsed = time.time() - start_time
-        print(f"📨 Request completed in {elapsed:.2f} seconds")
-        print(f"{'='*60}\n")
-
         return jsonify({
             "answer": answer,
             "sources": sources[:3],
-            "sources_count": len(sources),
-            "documents_loaded": True
+            "sources_count": len(sources)
         })
 
     except Exception as e:
-        elapsed = time.time() - start_time
-        print(f"❌ CHAT ERROR after {elapsed:.2f} seconds: {e}")
+        print(f"❌ Chat error: {e}")
         traceback.print_exc()
         return jsonify({"answer": f"⚠️ Error: {str(e)[:150]}"}), 500
-
-@app.route("/api/focus", methods=["POST"])
-def set_focus():
-    data = request.get_json()
-    session_id = data.get("session_id", session.get("session_id", "default"))
-    filename = data.get("filename", None)
-    if filename:
-        session_focus[session_id] = filename
-    else:
-        session_focus.pop(session_id, None)
-    return jsonify({"focus": session_focus.get(session_id)})
 
 @app.route("/api/stats")
 def stats():
     try:
-        stats = index.describe_index_stats()
+        stats = pinecone_index.describe_index_stats()
         return jsonify({
             "total_documents": get_document_count(),
-            "total_chunks": stats.get('total_vector_count', 0),
-            "total_pages": 0,
-            "categories": {"general": get_document_count()}
+            "total_chunks": stats.get('total_vector_count', 0)
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -705,17 +588,18 @@ def clear_conversation(session_id):
 
 @app.route("/api/debug", methods=["GET"])
 def debug():
-    return jsonify({
-        "pinecone_connected": True,
-        "groq_connected": True,
-        "documents_loaded": get_document_count(),
-        "documents": get_all_filenames(),
-        "vector_count": index.describe_index_stats().get('total_vector_count', 0) if index else 0
-    })
+    try:
+        stats = pinecone_index.describe_index_stats()
+        return jsonify({
+            "pinecone_connected": True,
+            "groq_connected": True,
+            "documents_loaded": get_document_count(),
+            "vector_count": stats.get('total_vector_count', 0)
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    print("\n🚀 Pinecone RAG Chatbot (Simple Fallback)")
+    print("\n🚀 Pinecone RAG Chatbot")
     print(f"📚 Documents: {get_document_count()}")
-    print(f"🔗 Pinecone: {PINECONE_INDEX_NAME}")
-    print("🧪 Test endpoint: /api/ping")
     app.run(debug=False, host="0.0.0.0", port=5000)

@@ -4,3 +4,4 @@ gunicorn==21.2.0
 pinecone
 groq
 python-dotenv
+sentence-transformers>=2.2.0
