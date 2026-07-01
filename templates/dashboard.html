@@ -30,13 +30,8 @@
             align-items: center;
             margin-bottom: 30px;
         }
-        .header h1 {
-            font-size: 24px;
-        }
-        .header .user-email {
-            color: #94a3b8;
-            font-size: 14px;
-        }
+        .header h1 { font-size: 24px; }
+        .header .user-email { color: #94a3b8; font-size: 14px; }
         .logout-btn {
             padding: 6px 16px;
             background: #e74c3c;
@@ -45,11 +40,8 @@
             border-radius: 8px;
             cursor: pointer;
             font-size: 13px;
-            transition: background 0.2s;
         }
-        .logout-btn:hover {
-            background: #c0392b;
-        }
+        .logout-btn:hover { background: #c0392b; }
         .section {
             background: #1a1a3e;
             padding: 20px;
@@ -89,9 +81,7 @@
             cursor: pointer;
             font-size: 12px;
         }
-        .copy-btn:hover {
-            background: #5a52d5;
-        }
+        .copy-btn:hover { background: #5a52d5; }
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
@@ -113,35 +103,31 @@
             color: #94a3b8;
             margin-top: 4px;
         }
-        .widget-preview {
-            margin-top: 12px;
-            padding: 20px;
+        .api-key-box {
             background: #0d0d1f;
+            padding: 12px;
             border-radius: 8px;
-            text-align: center;
-            color: #94a3b8;
-            border: 2px dashed #2d2d5e;
-        }
-        .widget-preview .icon {
-            font-size: 36px;
-        }
-        .widget-preview .hint {
-            font-size: 13px;
+            font-family: monospace;
+            border: 1px solid #2d2d5e;
             margin-top: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
-        .btn-primary {
+        .api-key-box code {
+            color: #6C63FF;
+            font-size: 14px;
+        }
+        .copy-key-btn {
             background: #6C63FF;
             color: white;
             border: none;
-            padding: 8px 20px;
-            border-radius: 8px;
+            padding: 4px 12px;
+            border-radius: 6px;
             cursor: pointer;
-            font-size: 14px;
-            transition: background 0.2s;
+            font-size: 12px;
         }
-        .btn-primary:hover {
-            background: #5a52d5;
-        }
+        .copy-key-btn:hover { background: #5a52d5; }
     </style>
 </head>
 <body>
@@ -154,28 +140,26 @@
             </div>
         </div>
 
-        <!-- Stats -->
         <div class="section">
             <h2>📊 Knowledge Base Stats</h2>
             <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="number" id="docCount">0</div>
-                    <div class="label">Documents</div>
-                </div>
-                <div class="stat-card">
-                    <div class="number" id="chunkCount">0</div>
-                    <div class="label">Chunks</div>
-                </div>
-                <div class="stat-card">
-                    <div class="number" id="pageCount">0</div>
-                    <div class="label">Pages</div>
-                </div>
+                <div class="stat-card"><div class="number" id="docCount">0</div><div class="label">Documents</div></div>
+                <div class="stat-card"><div class="number" id="chunkCount">0</div><div class="label">Chunks</div></div>
+                <div class="stat-card"><div class="number" id="pageCount">0</div><div class="label">Pages</div></div>
             </div>
         </div>
 
-        <!-- Embed Widget -->
         <div class="section">
-            <h2>📋 Embed Chat Widget on Your Website</h2>
+            <h2>🔑 Your API Key</h2>
+            <p>Use this API key in your widget embed code. It uniquely identifies you.</p>
+            <div class="api-key-box">
+                <code id="apiKeyDisplay">Loading...</code>
+                <button class="copy-key-btn" onclick="copyApiKey()">📋 Copy</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>📋 Embed Widget on Your Website</h2>
             <p>Copy and paste the following code into your website's HTML (before the closing <code>&lt;/body&gt;</code> tag).</p>
             <div style="position: relative; margin-top: 12px;">
                 <div class="embed-code" id="embedCode">
@@ -185,33 +169,26 @@
                         window.CHATBOT_AVATAR = '🧠';
                         window.CHATBOT_COLOR = '#6C63FF';
                         window.CHATBOT_GREETING = 'Hello! Ask me anything about our documents.';
+                        window.CHATBOT_API_KEY = 'YOUR_API_KEY_HERE';
                     &lt;/script&gt;
                     &lt;script src="{{ request.url_root }}widget.js"&gt;&lt;/script&gt;
                 </div>
                 <button class="copy-btn" onclick="copyEmbedCode()">📋 Copy</button>
             </div>
-            <div class="widget-preview">
-                <div class="icon">💬</div>
-                <div class="hint">Your visitors will see a chat bubble in the bottom-right corner. They must log in to use the chatbot.</div>
-            </div>
-        </div>
-
-        <!-- Quick Access -->
-        <div class="section">
-            <h2>🔗 Quick Links</h2>
-            <p>
-                <a href="/" style="color: #6C63FF; text-decoration: none;">🏠 Home</a> &nbsp;|&nbsp;
-                <a href="/login" style="color: #6C63FF; text-decoration: none;">🔐 Login Page</a> &nbsp;|&nbsp;
-                <a href="/signup" style="color: #6C63FF; text-decoration: none;">📝 Sign Up</a>
+            <p style="margin-top: 12px; color: #94a3b8; font-size: 13px;">
+                ⚠️ Replace <code>YOUR_API_KEY_HERE</code> with your actual API key shown above.
             </p>
         </div>
     </div>
 
     <script>
-        // Load stats
+        // Load stats and API key
+        const token = localStorage.getItem('chatbot_token');
+        if (!token) {
+            window.location.href = '/login';
+        }
+
         async function loadStats() {
-            const token = localStorage.getItem('chatbot_token');
-            if (!token) return;
             try {
                 const res = await fetch('/api/stats', {
                     headers: { 'Authorization': 'Bearer ' + token }
@@ -222,35 +199,46 @@
                     document.getElementById('chunkCount').textContent = data.total_chunks ? data.total_chunks.toLocaleString() : 0;
                     document.getElementById('pageCount').textContent = data.total_pages || 0;
                 }
-            } catch (e) {
-                console.error('Error loading stats:', e);
-            }
+            } catch (e) { console.error('Stats error:', e); }
         }
 
-        // Copy embed code
+        async function loadApiKey() {
+            try {
+                const res = await fetch('/api/api_key', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const key = data.api_key;
+                    document.getElementById('apiKeyDisplay').textContent = key;
+                    // Update embed code with the key
+                    const embed = document.getElementById('embedCode');
+                    embed.innerHTML = embed.innerHTML.replace('YOUR_API_KEY_HERE', key);
+                } else {
+                    document.getElementById('apiKeyDisplay').textContent = '❌ Failed to load';
+                }
+            } catch (e) { console.error('API key error:', e); }
+        }
+
+        function copyApiKey() {
+            const key = document.getElementById('apiKeyDisplay').textContent;
+            navigator.clipboard.writeText(key).then(() => {
+                const btn = document.querySelector('.copy-key-btn');
+                btn.textContent = '✅ Copied!';
+                setTimeout(() => btn.textContent = '📋 Copy', 2000);
+            });
+        }
+
         function copyEmbedCode() {
             const code = document.getElementById('embedCode').textContent;
             navigator.clipboard.writeText(code).then(() => {
                 const btn = document.querySelector('.copy-btn');
                 btn.textContent = '✅ Copied!';
-                setTimeout(() => {
-                    btn.textContent = '📋 Copy';
-                }, 2000);
-            }).catch(() => {
-                // Fallback
-                const textarea = document.createElement('textarea');
-                textarea.value = code;
-                document.body.appendChild(textarea);
-                textarea.select();
-                document.execCommand('copy');
-                document.body.removeChild(textarea);
-                alert('Embed code copied to clipboard!');
+                setTimeout(() => btn.textContent = '📋 Copy', 2000);
             });
         }
 
-        // Logout
         async function handleLogout() {
-            const token = localStorage.getItem('chatbot_token');
             try {
                 await fetch('/api/logout', {
                     method: 'POST',
@@ -261,28 +249,8 @@
             window.location.href = '/login';
         }
 
-        // Check auth
-        const token = localStorage.getItem('chatbot_token');
-        if (!token) {
-            window.location.href = '/login';
-        } else {
-            // Verify token
-            fetch('/api/me', {
-                headers: { 'Authorization': 'Bearer ' + token }
-            })
-            .then(res => {
-                if (!res.ok) {
-                    localStorage.removeItem('chatbot_token');
-                    window.location.href = '/login';
-                }
-            })
-            .catch(() => {
-                localStorage.removeItem('chatbot_token');
-                window.location.href = '/login';
-            });
-        }
-
         loadStats();
+        loadApiKey();
     </script>
 </body>
 </html>
