@@ -1,4 +1,4 @@
-# app.py – RAG Chatbot with User‑specific API Keys
+# app.py – RAG Chatbot with Supabase Auth & API Keys (Service Role)
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -27,7 +27,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 print("=" * 60)
-print("🚀 STARTING RAG CHATBOT (with API Keys)")
+print("🚀 STARTING RAG CHATBOT (with API Keys + Service Role)")
 print("=" * 60)
 
 app = Flask(__name__)
@@ -47,11 +47,16 @@ def after_request(response):
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY or not SUPABASE_JWT_SECRET:
     raise RuntimeError("Supabase environment variables not set")
+if not SUPABASE_SERVICE_ROLE_KEY:
+    raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY not set - needed for API key lookup")
 
+# Initialize Supabase clients
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase_admin: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 # ===== HELPERS =====
 def get_token_from_request():
@@ -66,7 +71,7 @@ def get_token_from_request():
 def get_api_key_from_request():
     return request.headers.get('X-API-Key')
 
-# ===== AUTH DECORATORS =====
+# ===== AUTH DECORATOR =====
 def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -81,25 +86,30 @@ def require_auth(f):
                 if user and user.user:
                     request.user = user.user
                     return f(*args, **kwargs)
-            except:
-                pass
+            except Exception as e:
+                print(f"JWT error: {e}")
 
         # 2. Try API key (for widget)
         api_key = get_api_key_from_request()
+        print(f"🔑 API Key received: {api_key}")
         if api_key:
             try:
-                # Look up user by api_key in the users table
-                result = supabase.table('users').select('*').eq('api_key', api_key).execute()
+                # Use admin client to bypass RLS
+                result = supabase_admin.table('users').select('*').eq('api_key', api_key).execute()
+                print(f"🔍 Supabase result: {result.data}")
                 if result.data and len(result.data) > 0:
                     user_data = result.data[0]
-                    # Get the full user from auth to attach
+                    # Get the full user from auth (admin)
                     user = supabase.auth.admin.get_user_by_id(user_data['id'])
                     if user and user.user:
                         request.user = user.user
                         return f(*args, **kwargs)
+                else:
+                    print("❌ No user found with that API key")
             except Exception as e:
                 print(f"API key lookup error: {e}")
 
+        print("❌ Authentication failed")
         return jsonify({"error": "Missing or invalid authentication"}), 401
 
     return decorated
@@ -191,15 +201,14 @@ def detect_focus_command(question):
 
 # ===== USER MANAGEMENT =====
 def ensure_user_has_api_key(user_id, email):
-    """Check if user has an API key; if not, generate one."""
     try:
-        result = supabase.table('users').select('api_key').eq('id', user_id).execute()
+        # Use admin client to check / insert
+        result = supabase_admin.table('users').select('api_key').eq('id', user_id).execute()
         if result.data and len(result.data) > 0:
             return result.data[0]['api_key']
         else:
-            # Generate new API key
             api_key = str(uuid.uuid4()).replace('-', '')[:32]
-            supabase.table('users').insert({
+            supabase_admin.table('users').insert({
                 'id': user_id,
                 'email': email,
                 'api_key': api_key
@@ -252,7 +261,6 @@ def signup():
         })
 
         if response.user:
-            # Create user record with API key
             ensure_user_has_api_key(response.user.id, response.user.email)
             return jsonify({
                 "user": {
@@ -283,7 +291,6 @@ def login():
         })
 
         if response.user:
-            # Ensure API key exists
             ensure_user_has_api_key(response.user.id, response.user.email)
             resp = make_response(jsonify({
                 "access_token": response.session.access_token,
@@ -328,7 +335,7 @@ def get_user():
 def get_api_key():
     user_id = request.user.id
     try:
-        result = supabase.table('users').select('api_key').eq('id', user_id).execute()
+        result = supabase_admin.table('users').select('api_key').eq('id', user_id).execute()
         if result.data and len(result.data) > 0:
             return jsonify({"api_key": result.data[0]['api_key']})
         else:
@@ -361,7 +368,7 @@ def serve_widget():
         primaryColor: window.CHATBOT_COLOR || '#6C63FF',
         secondaryColor: '#3F3D56',
         greeting: window.CHATBOT_GREETING || 'Hello! Ask me anything about our documents.',
-        apiKey: window.CHATBOT_API_KEY || null,   // Required
+        apiKey: window.CHATBOT_API_KEY || null,
     };
 
     console.log('🧠 Chat widget loaded');
@@ -369,18 +376,103 @@ def serve_widget():
     let isOpen = false;
     let isLoading = false;
 
-    // ── Check API key ──
     function hasApiKey() {
         return CONFIG.apiKey && CONFIG.apiKey.length > 0;
     }
 
-    // ── Create widget ──
     function createWidget() {
         const widget = document.createElement('div');
         widget.id = 'chatbot-widget';
         widget.innerHTML = `
             <style>
-                /* ... same as before ... */
+                #chatbot-widget * { box-sizing: border-box; margin:0; padding:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+                #chatbot-widget .chatbot-button {
+                    position: fixed; bottom: 24px; right: 24px;
+                    width: 60px; height: 60px; border-radius: 50%;
+                    background: ${CONFIG.primaryColor}; color: #fff;
+                    border: none; box-shadow: 0 6px 24px rgba(108, 99, 255, 0.4);
+                    cursor: pointer; font-size: 28px; z-index: 99999;
+                    display: flex; align-items: center; justify-content: center;
+                    transition: transform 0.2s, box-shadow 0.2s;
+                }
+                #chatbot-widget .chatbot-button:hover { transform: scale(1.08); box-shadow: 0 8px 32px rgba(108, 99, 255, 0.5); }
+                #chatbot-widget .chatbot-button.hidden { display: none; }
+                #chatbot-widget .chatbot-window {
+                    position: fixed; bottom: 100px; right: 24px;
+                    width: 400px; max-width: calc(100vw - 48px);
+                    height: 560px; max-height: calc(100vh - 140px);
+                    background: #ffffff; border-radius: 20px;
+                    box-shadow: 0 16px 60px rgba(0,0,0,0.25);
+                    z-index: 99998; display: none;
+                    flex-direction: column; overflow: hidden;
+                    animation: slideUp 0.3s ease-out;
+                }
+                @keyframes slideUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
+                #chatbot-widget .chatbot-window.open { display: flex; }
+                #chatbot-widget .chatbot-header {
+                    background: ${CONFIG.primaryColor}; color: #fff;
+                    padding: 18px 20px; display: flex; align-items: center; gap: 12px;
+                    flex-shrink: 0; border-bottom: 1px solid rgba(255,255,255,0.1);
+                }
+                #chatbot-widget .chatbot-header .bot-icon { font-size: 24px; }
+                #chatbot-widget .chatbot-header .bot-name { font-size: 16px; font-weight: 600; flex: 1; }
+                #chatbot-widget .chatbot-header .header-actions { display: flex; gap: 6px; }
+                #chatbot-widget .chatbot-header .header-btn {
+                    background: rgba(255,255,255,0.15); border: none; color: #fff;
+                    width: 32px; height: 32px; border-radius: 8px; cursor: pointer; font-size: 16px;
+                    display: flex; align-items: center; justify-content: center;
+                    transition: background 0.2s;
+                }
+                #chatbot-widget .chatbot-header .header-btn:hover { background: rgba(255,255,255,0.3); }
+                #chatbot-widget .chatbot-messages {
+                    flex: 1; overflow-y: auto; padding: 16px 16px 8px 16px;
+                    display: flex; flex-direction: column; gap: 12px;
+                    background: #f8f9fc;
+                }
+                #chatbot-widget .chatbot-messages::-webkit-scrollbar { width: 4px; }
+                #chatbot-widget .chatbot-messages::-webkit-scrollbar-thumb { background: #d0d5e0; border-radius: 4px; }
+                #chatbot-widget .chatbot-message { display: flex; gap: 10px; max-width: 85%; animation: fadeIn 0.25s ease; }
+                @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+                #chatbot-widget .chatbot-message.user { align-self: flex-end; flex-direction: row-reverse; }
+                #chatbot-widget .chatbot-message .avatar {
+                    width: 32px; height: 32px; border-radius: 50%;
+                    flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+                    font-size: 16px; background: ${CONFIG.primaryColor}; color: #fff;
+                }
+                #chatbot-widget .chatbot-message.user .avatar { background: ${CONFIG.secondaryColor}; }
+                #chatbot-widget .chatbot-message .bubble {
+                    padding: 12px 16px; border-radius: 16px;
+                    font-size: 14px; line-height: 1.6; word-break: break-word;
+                    background: #fff; color: #1e1e2f; box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+                }
+                #chatbot-widget .chatbot-message.bot .bubble { border-bottom-left-radius: 4px; }
+                #chatbot-widget .chatbot-message.user .bubble { background: ${CONFIG.primaryColor}; color: #fff; border-bottom-right-radius: 4px; }
+                #chatbot-widget .chatbot-message .sources { margin-top: 6px; font-size: 11px; color: #8e95a9; display: flex; flex-wrap: wrap; gap: 4px 8px; }
+                #chatbot-widget .chatbot-message .sources span { background: #f0f2f5; padding: 2px 8px; border-radius: 12px; }
+                #chatbot-widget .chatbot-typing { display: flex; gap: 4px; padding: 8px 0; }
+                #chatbot-widget .chatbot-typing span { width: 8px; height: 8px; border-radius: 50%; background: ${CONFIG.primaryColor}; animation: bounce 1.4s infinite; }
+                #chatbot-widget .chatbot-typing span:nth-child(2) { animation-delay: 0.2s; }
+                #chatbot-widget .chatbot-typing span:nth-child(3) { animation-delay: 0.4s; }
+                @keyframes bounce { 0%,60%,100% { transform:translateY(0); } 30% { transform:translateY(-8px); } }
+                #chatbot-widget .chatbot-input-area {
+                    display: flex; gap: 10px; padding: 12px 16px;
+                    background: #fff; border-top: 1px solid #eef0f4; flex-shrink: 0;
+                }
+                #chatbot-widget .chatbot-input-area input {
+                    flex: 1; padding: 10px 14px; border: 1px solid #e2e6ed; border-radius: 24px;
+                    font-size: 14px; outline: none; transition: border 0.2s; background: #f8f9fc;
+                }
+                #chatbot-widget .chatbot-input-area input:focus { border-color: ${CONFIG.primaryColor}; background: #fff; }
+                #chatbot-widget .chatbot-input-area button {
+                    padding: 10px 20px; background: ${CONFIG.primaryColor}; color: #fff;
+                    border: none; border-radius: 24px; font-size: 14px; font-weight: 500; cursor: pointer;
+                    transition: background 0.2s; white-space: nowrap;
+                }
+                #chatbot-widget .chatbot-input-area button:hover { background: #5a52d5; }
+                @media (max-width:500px) {
+                    #chatbot-widget .chatbot-window { bottom:0; right:0; width:100%; height:100%; max-height:100vh; border-radius:0; }
+                    #chatbot-widget .chatbot-button { bottom:16px; right:16px; width:56px; height:56px; font-size:24px; }
+                }
             </style>
             <button class="chatbot-button" id="chatbot-toggle">${CONFIG.botAvatar}</button>
             <div class="chatbot-window" id="chatbot-window">
@@ -406,7 +498,6 @@ def serve_widget():
         `;
         document.body.appendChild(widget);
 
-        // Check API key
         if (!hasApiKey()) {
             const msgs = document.getElementById('chatbot-messages');
             msgs.innerHTML = `
@@ -651,7 +742,7 @@ def chat():
         traceback.print_exc()
         return jsonify({"answer": f"⚠️ Server error: {str(e)[:100]}"}), 500
 
-# ===== OTHER PROTECTED ENDPOINTS (use @require_auth) =====
+# ===== OTHER PROTECTED ENDPOINTS =====
 @app.route("/api/stats")
 @require_auth
 def stats():
