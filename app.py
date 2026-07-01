@@ -69,7 +69,10 @@ def get_token_from_request():
     return None
 
 def get_api_key_from_request():
-    return request.headers.get('X-API-Key')
+    # Case-insensitive header lookup
+    return (request.headers.get('X-API-Key') or
+            request.headers.get('X-Api-Key') or
+            request.headers.get('x-api-key'))
 
 # ===== AUTH DECORATOR =====
 def require_auth(f):
@@ -78,7 +81,7 @@ def require_auth(f):
         if request.method == "OPTIONS":
             return jsonify({"status": "ok"}), 200
 
-        # 1. Try JWT / cookie (for dashboard)
+        # 1. Try JWT / cookie
         token = get_token_from_request()
         if token:
             try:
@@ -89,30 +92,38 @@ def require_auth(f):
             except Exception as e:
                 print(f"JWT error: {e}")
 
-        # 2. Try API key (for widget)
+        # 2. Try API key
         api_key = get_api_key_from_request()
         print(f"🔑 API Key received: {api_key}")
+
         if api_key:
             try:
-                # Use fresh admin client to bypass RLS
-                admin_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-                result = admin_client.table('users').select('*').eq('api_key', api_key).execute()
-                print(f"🔍 Supabase result: {result.data}")
+                # Use the global admin client (already initialized)
+                print("🔍 Querying users table...")
+                result = supabase_admin.table('users').select('*').eq('api_key', api_key).execute()
+                print(f"🔍 Query result: {result.data}")
+
                 if result.data and len(result.data) > 0:
                     user_data = result.data[0]
+                    print(f"👤 Found user: {user_data['email']}")
                     # Get the full user from auth (admin)
                     user = supabase.auth.admin.get_user_by_id(user_data['id'])
                     if user and user.user:
                         request.user = user.user
+                        print("✅ Authentication successful with API key")
                         return f(*args, **kwargs)
+                    else:
+                        print("❌ Could not retrieve user from auth admin")
                 else:
                     print("❌ No user found with that API key")
             except Exception as e:
                 print(f"❌ API key lookup error: {e}")
                 import traceback
                 traceback.print_exc()
+        else:
+            print("❌ No API key provided in headers")
 
-        print("❌ Authentication failed")
+        print("❌ Authentication failed – returning 401")
         return jsonify({"error": "Missing or invalid authentication"}), 401
 
     return decorated
@@ -224,13 +235,11 @@ def ensure_user_has_api_key(user_id, email):
 
 @app.route('/api/debug-headers', methods=['GET'])
 def debug_headers():
-    """Return all request headers to verify X-API-Key is received."""
     return jsonify(dict(request.headers))
 
 @app.route('/api/test-key', methods=['GET'])
 def test_key():
-    """Test if the provided API key exists in the users table."""
-    api_key = request.headers.get('X-API-Key')
+    api_key = request.headers.get('X-API-Key') or request.headers.get('X-Api-Key')
     if not api_key:
         return jsonify({"error": "No API key provided"}), 400
     try:
