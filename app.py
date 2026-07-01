@@ -1,4 +1,4 @@
-# app.py – RAG Chatbot with Supabase Auth & API Keys (Full Debug)
+# app.py – RAG Chatbot with Fixed API Key Authentication
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -26,9 +26,9 @@ sys.stdout.flush()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-print("=" * 60)
-print("🚀 STARTING RAG CHATBOT (with API Keys + Debug)")
-print("=" * 60)
+print("=" * 60, flush=True)
+print("🚀 STARTING RAG CHATBOT (FIXED AUTH)", flush=True)
+print("=" * 60, flush=True)
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -69,12 +69,15 @@ def get_token_from_request():
     return None
 
 def get_api_key_from_request():
-    # Case-insensitive header lookup
-    return (request.headers.get('X-API-Key') or
-            request.headers.get('X-Api-Key') or
-            request.headers.get('x-api-key'))
+    # Check all possible header names (case variations)
+    key = (request.headers.get('X-API-Key') or
+           request.headers.get('X-Api-Key') or
+           request.headers.get('x-api-key'))
+    print(f"🔑 Raw headers: {dict(request.headers)}", flush=True)
+    print(f"🔑 Extracted API key: {key}", flush=True)
+    return key
 
-# ===== AUTH DECORATOR =====
+# ===== AUTH DECORATOR (FIXED) =====
 def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -88,42 +91,45 @@ def require_auth(f):
                 user = supabase.auth.get_user(token)
                 if user and user.user:
                     request.user = user.user
+                    print("✅ Authenticated via JWT", flush=True)
                     return f(*args, **kwargs)
             except Exception as e:
-                print(f"JWT error: {e}")
+                print(f"JWT error: {e}", flush=True)
 
-        # 2. Try API key
+        # 2. Try API key (exact same logic as /api/test-key)
         api_key = get_api_key_from_request()
-        print(f"🔑 API Key received: {api_key}")
+        print(f"🔑 API Key received: {api_key}", flush=True)
 
         if api_key:
             try:
-                # Use the global admin client (already initialized)
-                print("🔍 Querying users table...")
+                print("🔍 Querying users table...", flush=True)
                 result = supabase_admin.table('users').select('*').eq('api_key', api_key).execute()
-                print(f"🔍 Query result: {result.data}")
+                print(f"🔍 Query result: {result.data}", flush=True)
 
                 if result.data and len(result.data) > 0:
                     user_data = result.data[0]
-                    print(f"👤 Found user: {user_data['email']}")
-                    # Get the full user from auth (admin)
-                    user = supabase.auth.admin.get_user_by_id(user_data['id'])
-                    if user and user.user:
-                        request.user = user.user
-                        print("✅ Authentication successful with API key")
-                        return f(*args, **kwargs)
-                    else:
-                        print("❌ Could not retrieve user from auth admin")
+                    print(f"👤 Found user: {user_data['email']}", flush=True)
+                    # Attach user data directly to request (no need to fetch from auth.admin)
+                    # This mimics what the test-key endpoint does
+                    request.user = type('User', (), {
+                        'id': user_data['id'],
+                        'email': user_data['email'],
+                        'app_metadata': {},
+                        'user_metadata': {},
+                        'aud': 'authenticated',
+                        'created_at': user_data['created_at']
+                    })()
+                    print("✅ Authentication successful with API key", flush=True)
+                    return f(*args, **kwargs)
                 else:
-                    print("❌ No user found with that API key")
+                    print("❌ No user found with that API key", flush=True)
             except Exception as e:
-                print(f"❌ API key lookup error: {e}")
-                import traceback
+                print(f"❌ API key lookup error: {e}", flush=True)
                 traceback.print_exc()
         else:
-            print("❌ No API key provided in headers")
+            print("❌ No API key provided in headers", flush=True)
 
-        print("❌ Authentication failed – returning 401")
+        print("❌ Authentication failed – returning 401", flush=True)
         return jsonify({"error": "Missing or invalid authentication"}), 401
 
     return decorated
@@ -141,19 +147,19 @@ if not GROQ_API_KEY:
     raise RuntimeError("GROQ_API_KEY not set")
 
 # ===== LOAD EMBEDDING MODEL =====
-print("📥 Loading embedding model (all-MiniLM-L6-v2)...")
+print("📥 Loading embedding model (all-MiniLM-L6-v2)...", flush=True)
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-print("✅ Model loaded (384-dim)")
+print("✅ Model loaded (384-dim)", flush=True)
 
 # ===== INITIALIZE CLIENTS =====
-print("🔗 Connecting to Pinecone...")
+print("🔗 Connecting to Pinecone...", flush=True)
 pc = Pinecone(api_key=PINECONE_API_KEY)
 pinecone_index = pc.Index(host=PINECONE_INDEX_HOST)
-print(f"✅ Pinecone index: {PINECONE_INDEX_NAME}")
+print(f"✅ Pinecone index: {PINECONE_INDEX_NAME}", flush=True)
 
-print("🔗 Connecting to Groq...")
+print("🔗 Connecting to Groq...", flush=True)
 groq_client = Groq(api_key=GROQ_API_KEY)
-print(f"✅ Groq ready (model: {GROQ_MODEL})")
+print(f"✅ Groq ready (model: {GROQ_MODEL})", flush=True)
 
 memory = ConversationMemory()
 session_focus = {}
@@ -163,10 +169,10 @@ def load_document_metadata():
     try:
         with open("brain_metadata.json", "r") as f:
             data = json.load(f)
-            print(f"✅ Loaded {len(data)} documents from metadata")
+            print(f"✅ Loaded {len(data)} documents from metadata", flush=True)
             return data
     except Exception as e:
-        print(f"⚠️ Could not load metadata: {e}")
+        print(f"⚠️ Could not load metadata: {e}", flush=True)
         return {}
 
 documents_metadata = load_document_metadata()
@@ -185,10 +191,10 @@ def search_pinecone(query: str, top_k: int = 15):
         matches = results.get('matches', [])
         if matches:
             scores = [round(m['score'], 4) for m in matches[:5]]
-            print(f"📊 Top scores: {scores}")
+            print(f"📊 Top scores: {scores}", flush=True)
         return matches
     except Exception as e:
-        print(f"Search error: {e}")
+        print(f"Search error: {e}", flush=True)
         raise
 
 def generate_response(query: str, context: str):
@@ -204,7 +210,7 @@ def generate_response(query: str, context: str):
         )
         return response.choices[0].message.content
     except Exception as e:
-        print(f"Generation error: {e}")
+        print(f"Generation error: {e}", flush=True)
         raise
 
 def detect_focus_command(question):
@@ -228,7 +234,7 @@ def ensure_user_has_api_key(user_id, email):
             }).execute()
             return api_key
     except Exception as e:
-        print(f"Error ensuring API key: {e}")
+        print(f"Error ensuring API key: {e}", flush=True)
         return None
 
 # ===== DEBUG ENDPOINTS =====
@@ -239,7 +245,7 @@ def debug_headers():
 
 @app.route('/api/test-key', methods=['GET'])
 def test_key():
-    api_key = request.headers.get('X-API-Key') or request.headers.get('X-Api-Key')
+    api_key = get_api_key_from_request()
     if not api_key:
         return jsonify({"error": "No API key provided"}), 400
     try:
@@ -305,7 +311,7 @@ def signup():
         else:
             return jsonify({"error": "Sign-up failed"}), 400
     except Exception as e:
-        print(f"Signup error: {e}")
+        print(f"Signup error: {e}", flush=True)
         return jsonify({"error": str(e)}), 400
 
 @app.route('/api/login', methods=['POST', 'OPTIONS'])
@@ -340,7 +346,7 @@ def login():
         else:
             return jsonify({"error": "Invalid credentials"}), 401
     except Exception as e:
-        print(f"Login error: {e}")
+        print(f"Login error: {e}", flush=True)
         return jsonify({"error": str(e)}), 401
 
 @app.route('/api/logout', methods=['POST'])
@@ -710,13 +716,14 @@ def index():
             pass
     return redirect('/login')
 
-# ===== PROTECTED CHAT API =====
+# ===== PROTECTED CHAT API (with debug prints) =====
 @app.route("/api/chat", methods=["POST", "OPTIONS"])
 @require_auth
 def chat():
     if request.method == "OPTIONS":
         return jsonify({"status": "ok"}), 200
 
+    print("📨 Entered chat function", flush=True)
     try:
         data = request.get_json()
         if not data or 'question' not in data:
@@ -772,7 +779,7 @@ def chat():
         return jsonify({"answer": answer, "sources": sources[:5]})
 
     except Exception as e:
-        print(f"Chat error: {e}")
+        print(f"Chat error: {e}", flush=True)
         traceback.print_exc()
         return jsonify({"answer": f"⚠️ Server error: {str(e)[:100]}"}), 500
 
@@ -833,5 +840,5 @@ def debug():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    print("\n🚀 Server running on http://0.0.0.0:5000")
+    print("\n🚀 Server running on http://0.0.0.0:5000", flush=True)
     app.run(debug=False, host="0.0.0.0", port=5000)
