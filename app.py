@@ -1,4 +1,4 @@
-# app.py – RAG Chatbot (Polished Widget + Active Groq Model)
+# app.py – RAG Chatbot with Supabase Authentication
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -6,15 +6,18 @@ import os
 import sys
 import uuid
 import re
-import time
 import json
 import logging
 import traceback
-from flask import Flask, request, jsonify, render_template, session, send_from_directory
+from functools import wraps
+from flask import Flask, request, jsonify, render_template, session, redirect, url_for
 from flask_cors import CORS
 from pinecone import Pinecone
 from groq import Groq
 from sentence_transformers import SentenceTransformer
+from supabase import create_client, Client
+import jwt
+
 from memory import ConversationMemory
 
 # Force flush for logging
@@ -25,7 +28,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 print("=" * 60)
-print("🚀 STARTING RAG CHATBOT (Polished Widget)")
+print("🚀 STARTING RAG CHATBOT (with Supabase Auth)")
 print("=" * 60)
 
 app = Flask(__name__)
@@ -33,6 +36,7 @@ app.secret_key = os.urandom(24)
 
 # ===== CORS =====
 CORS(app, resources={r"/api/*": {"origins": "*"}})
+
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
@@ -40,19 +44,57 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
     return response
 
+# ===== SUPABASE CONFIGURATION =====
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
+
+if not SUPABASE_URL or not SUPABASE_KEY or not SUPABASE_JWT_SECRET:
+    raise RuntimeError("Supabase environment variables not set")
+
+# Initialize Supabase client
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# ===== AUTH DECORATOR =====
+def require_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        # Skip auth for OPTIONS preflight
+        if request.method == "OPTIONS":
+            return jsonify({"status": "ok"}), 200
+
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({"error": "Missing or invalid token"}), 401
+
+        token = auth_header.split(' ')[1]
+
+        try:
+            # Verify JWT with Supabase
+            user = supabase.auth.get_user(token)
+            if not user or not user.user:
+                return jsonify({"error": "Invalid or expired token"}), 401
+            request.user = user.user
+        except Exception as e:
+            print(f"Auth error: {e}")
+            return jsonify({"error": str(e)}), 401
+
+        return f(*args, **kwargs)
+    return decorated
+
 # ===== CONFIGURATION =====
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_HOST = os.getenv("PINECONE_INDEX_HOST")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "knowledge-brain")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = "llama-3.1-8b-instant"   # Confirmed active model
+GROQ_MODEL = "llama-3.1-8b-instant"
 
 if not PINECONE_API_KEY:
     raise RuntimeError("PINECONE_API_KEY not set")
 if not GROQ_API_KEY:
     raise RuntimeError("GROQ_API_KEY not set")
 
-# ===== LOAD EMBEDDING MODEL (all-MiniLM-L6-v2) =====
+# ===== LOAD EMBEDDING MODEL =====
 print("📥 Loading embedding model (all-MiniLM-L6-v2)...")
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 print("✅ Model loaded (384-dim)")
@@ -82,8 +124,10 @@ def load_document_metadata():
         return {}
 
 documents_metadata = load_document_metadata()
+
 def get_all_filenames():
     return list(documents_metadata.keys())
+
 def get_document_count():
     return len(documents_metadata)
 
@@ -93,7 +137,7 @@ def get_embedding(text: str):
         text = text[:8000]
     return embedding_model.encode(text).tolist()
 
-# ===== PINECONE SEARCH (no threshold, get all results) =====
+# ===== PINECONE SEARCH =====
 def search_pinecone(query: str, top_k: int = 15):
     try:
         q_emb = get_embedding(query)
@@ -134,12 +178,71 @@ def detect_focus_command(question):
         return match.group(1)
     return None
 
-# ===== ROUTES =====
+# ===== AUTH ROUTES =====
+
+@app.route('/login')
+def login_page():
+    return render_template("login.html")
+
+@app.route('/api/login', methods=['POST', 'OPTIONS'])
+def login():
+    if request.method == "OPTIONS":
+        return jsonify({"status": "ok"}), 200
+
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        password = data.get('password')
+
+        if not email or not password:
+            return jsonify({"error": "Email and password required"}), 400
+
+        response = supabase.auth.sign_in_with_password({
+            "email": email,
+            "password": password
+        })
+
+        if response.user:
+            return jsonify({
+                "access_token": response.session.access_token,
+                "refresh_token": response.session.refresh_token,
+                "user": {
+                    "email": response.user.email,
+                    "id": response.user.id
+                }
+            })
+        else:
+            return jsonify({"error": "Invalid credentials"}), 401
+
+    except Exception as e:
+        print(f"Login error: {e}")
+        return jsonify({"error": str(e)}), 401
+
+@app.route('/api/logout', methods=['POST'])
+@require_auth
+def logout():
+    try:
+        supabase.auth.sign_out()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/me', methods=['GET'])
+@require_auth
+def get_user():
+    return jsonify({
+        "user": {
+            "email": request.user.email,
+            "id": request.user.id
+        }
+    })
+
+# ===== WIDGET ROUTE =====
 
 @app.route('/widget.js')
 def serve_widget():
     widget_code = """
-// Chat Widget – Polished UI
+// Chat Widget – Polished UI with Supabase Auth
 (function() {
     'use strict';
 
@@ -157,6 +260,16 @@ def serve_widget():
     let isOpen = false;
     let isLoading = false;
 
+    // ── Auth helpers ──
+    function getToken() {
+        return localStorage.getItem('chatbot_token');
+    }
+
+    function isLoggedIn() {
+        return !!getToken();
+    }
+
+    // ── Create widget ──
     function createWidget() {
         const widget = document.createElement('div');
         widget.id = 'chatbot-widget';
@@ -392,6 +505,20 @@ def serve_widget():
                 #chatbot-widget .chatbot-input-area button:hover {
                     background: #5a52d5;
                 }
+                #chatbot-widget .auth-message {
+                    padding: 20px;
+                    text-align: center;
+                    color: #666;
+                    font-size: 14px;
+                }
+                #chatbot-widget .auth-message a {
+                    color: ${CONFIG.primaryColor};
+                    text-decoration: none;
+                    font-weight: 600;
+                }
+                #chatbot-widget .auth-message a:hover {
+                    text-decoration: underline;
+                }
                 @media (max-width: 500px) {
                     #chatbot-widget .chatbot-window {
                         bottom: 0;
@@ -439,6 +566,9 @@ def serve_widget():
 
         document.body.appendChild(widget);
 
+        // ── Check auth status on load ──
+        checkAuth();
+
         document.getElementById('chatbot-toggle').addEventListener('click', toggleChat);
         document.getElementById('chatbot-close').addEventListener('click', closeChat);
         document.getElementById('chatbot-clear').addEventListener('click', clearChat);
@@ -448,7 +578,37 @@ def serve_widget():
         });
     }
 
+    // ── Auth check ──
+    function checkAuth() {
+        const token = getToken();
+        if (!token) {
+            // Show login prompt in chat
+            const messages = document.getElementById('chatbot-messages');
+            messages.innerHTML = `
+                <div class="chatbot-message bot">
+                    <div class="avatar">${CONFIG.botAvatar}</div>
+                    <div class="bubble">
+                        🔐 Please <a href="/login" target="_top">login</a> to use the chatbot.
+                    </div>
+                </div>
+            `;
+            // Disable input
+            document.getElementById('chatbot-input').disabled = true;
+            document.getElementById('chatbot-send').disabled = true;
+        } else {
+            document.getElementById('chatbot-input').disabled = false;
+            document.getElementById('chatbot-send').disabled = false;
+        }
+    }
+
+    // ── Toggle chat ──
     function toggleChat() {
+        if (!isLoggedIn()) {
+            // Redirect to login if not authenticated
+            window.location.href = '/login';
+            return;
+        }
+
         isOpen = !isOpen;
         const win = document.getElementById('chatbot-window');
         const btn = document.getElementById('chatbot-toggle');
@@ -468,6 +628,7 @@ def serve_widget():
         document.getElementById('chatbot-toggle').classList.remove('hidden');
     }
 
+    // ── Clear chat ──
     async function clearChat() {
         try {
             await fetch(`${CONFIG.apiUrl}/api/conversation/${sessionId}`, { method: 'DELETE' });
@@ -482,6 +643,7 @@ def serve_widget():
         `;
     }
 
+    // ── Add message ──
     function addMessage(text, role, sources = []) {
         const container = document.getElementById('chatbot-messages');
         const div = document.createElement('div');
@@ -506,6 +668,7 @@ def serve_widget():
         container.scrollTop = container.scrollHeight;
     }
 
+    // ── Typing indicator ──
     function showTyping() {
         const container = document.getElementById('chatbot-messages');
         const div = document.createElement('div');
@@ -524,23 +687,48 @@ def serve_widget():
         if (el) el.remove();
     }
 
+    // ── Send message ──
     async function sendMessage() {
         const input = document.getElementById('chatbot-input');
         const question = input.value.trim();
         if (!question || isLoading) return;
+
+        // Check auth again
+        if (!isLoggedIn()) {
+            window.location.href = '/login';
+            return;
+        }
 
         isLoading = true;
         addMessage(question, 'user');
         input.value = '';
         showTyping();
 
+        const token = getToken();
+
         try {
             const res = await fetch(`${CONFIG.apiUrl}/api/chat`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + token
+                },
                 body: JSON.stringify({ question, session_id: sessionId })
             });
+
             const data = await res.json();
+
+            if (res.status === 401) {
+                // Token expired or invalid
+                localStorage.removeItem('chatbot_token');
+                hideTyping();
+                addMessage('🔐 Your session has expired. Please <a href="/login" target="_top">login</a> again.', 'bot');
+                document.getElementById('chatbot-input').disabled = true;
+                document.getElementById('chatbot-send').disabled = true;
+                isLoading = false;
+                return;
+            }
+
             hideTyping();
             if (data.answer) {
                 addMessage(data.answer, 'bot', data.sources || []);
@@ -555,6 +743,7 @@ def serve_widget():
         isLoading = false;
     }
 
+    // ── Initialize ──
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', createWidget);
     } else {
@@ -564,13 +753,16 @@ def serve_widget():
 """
     return widget_code, 200, {'Content-Type': 'application/javascript'}
 
+# ===== MAIN PAGE =====
+
 @app.route('/')
 def index():
-    if 'session_id' not in session:
-        session['session_id'] = str(uuid.uuid4())
     return render_template("index.html")
 
+# ===== PROTECTED CHAT API =====
+
 @app.route("/api/chat", methods=["POST", "OPTIONS"])
+@require_auth
 def chat():
     if request.method == "OPTIONS":
         return jsonify({"status": "ok"}), 200
@@ -604,12 +796,12 @@ def chat():
             memory.add_message(session_id, "assistant", msg)
             return jsonify({"answer": msg, "sources": []})
 
-        # Search Pinecone – top 15, no score threshold
+        # Search Pinecone
         matches = search_pinecone(question, top_k=15)
         if not matches:
             return jsonify({"answer": "I could not find any matching chunks.", "sources": []})
 
-        # Build context from all matches
+        # Build context
         context_parts = []
         sources = []
         for match in matches:
@@ -622,7 +814,6 @@ def chat():
         if not context_parts:
             return jsonify({"answer": "Found matches but no text. Please rephrase.", "sources": []})
 
-        # Use top 5 chunks for context
         context = "\n\n---\n\n".join(context_parts[:5])
         answer = generate_response(question, context)
 
@@ -637,7 +828,9 @@ def chat():
         return jsonify({"answer": f"⚠️ Server error: {str(e)[:100]}"}), 500
 
 # ===== OTHER ENDPOINTS =====
+
 @app.route("/api/stats")
+@require_auth
 def stats():
     try:
         s = pinecone_index.describe_index_stats()
@@ -649,6 +842,7 @@ def stats():
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/documents")
+@require_auth
 def documents():
     docs = []
     for fname, meta in documents_metadata.items():
@@ -661,6 +855,7 @@ def documents():
     return jsonify({"documents": docs, "total": len(docs)})
 
 @app.route("/api/categories")
+@require_auth
 def categories():
     cats = set()
     for meta in documents_metadata.values():
@@ -668,12 +863,14 @@ def categories():
     return jsonify({"categories": sorted(list(cats))})
 
 @app.route("/api/conversation/<session_id>", methods=["DELETE"])
+@require_auth
 def clear_conversation(session_id):
     memory.clear_session(session_id)
     session_focus.pop(session_id, None)
     return jsonify({"success": True})
 
 @app.route("/api/debug")
+@require_auth
 def debug():
     try:
         s = pinecone_index.describe_index_stats()
