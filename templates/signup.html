@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Login - Knowledge Brain</title>
+    <title>Sign Up - Knowledge Brain</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -12,7 +12,7 @@
             min-height: 100vh;
             background: linear-gradient(135deg, #f5f7fa 0%, #e4e8f0 100%);
         }
-        .login-container {
+        .signup-container {
             background: white;
             padding: 40px;
             border-radius: 20px;
@@ -20,13 +20,13 @@
             width: 100%;
             max-width: 400px;
         }
-        .login-container h1 {
+        .signup-container h1 {
             text-align: center;
             margin-bottom: 8px;
             font-size: 28px;
             color: #1a1a2e;
         }
-        .login-container .subtitle {
+        .signup-container .subtitle {
             text-align: center;
             color: #666;
             margin-bottom: 30px;
@@ -54,7 +54,7 @@
         .form-group input:focus {
             border-color: #6C63FF;
         }
-        .login-btn {
+        .signup-btn {
             width: 100%;
             padding: 14px;
             background: #6C63FF;
@@ -66,10 +66,10 @@
             cursor: pointer;
             transition: background 0.2s;
         }
-        .login-btn:hover {
+        .signup-btn:hover {
             background: #5a52d5;
         }
-        .login-btn:disabled {
+        .signup-btn:disabled {
             opacity: 0.6;
             cursor: not-allowed;
         }
@@ -85,18 +85,18 @@
             margin-top: 12px;
             text-align: center;
         }
-        .register-link {
+        .login-link {
             text-align: center;
             margin-top: 16px;
             font-size: 14px;
             color: #666;
         }
-        .register-link a {
+        .login-link a {
             color: #6C63FF;
             text-decoration: none;
             font-weight: 500;
         }
-        .register-link a:hover {
+        .login-link a:hover {
             text-decoration: underline;
         }
         .logo {
@@ -107,44 +107,60 @@
     </style>
 </head>
 <body>
-    <div class="login-container">
+    <div class="signup-container">
         <div class="logo">🧠</div>
-        <h1>Knowledge Brain</h1>
-        <p class="subtitle">Login to access the AI chatbot</p>
+        <h1>Create Account</h1>
+        <p class="subtitle">Join Knowledge Brain</p>
 
-        <form id="loginForm" onsubmit="handleLogin(event)">
+        <form id="signupForm" onsubmit="handleSignup(event)">
             <div class="form-group">
                 <label for="email">Email</label>
                 <input type="email" id="email" placeholder="you@example.com" required autofocus>
             </div>
             <div class="form-group">
                 <label for="password">Password</label>
-                <input type="password" id="password" placeholder="Enter your password" required>
+                <input type="password" id="password" placeholder="Create a password" required>
             </div>
-            <button type="submit" class="login-btn" id="loginBtn">Login</button>
+            <div class="form-group">
+                <label for="confirmPassword">Confirm Password</label>
+                <input type="password" id="confirmPassword" placeholder="Confirm your password" required>
+            </div>
+            <button type="submit" class="signup-btn" id="signupBtn">Sign Up</button>
             <div id="message"></div>
         </form>
 
-        <div class="register-link">
-            Don't have an account? <a href="/signup">Sign up</a>
+        <div class="login-link">
+            Already have an account? <a href="/login">Login</a>
         </div>
     </div>
 
     <script>
-        async function handleLogin(event) {
+        async function handleSignup(event) {
             event.preventDefault();
 
             const email = document.getElementById('email').value.trim();
             const password = document.getElementById('password').value;
+            const confirm = document.getElementById('confirmPassword').value;
             const message = document.getElementById('message');
-            const btn = document.getElementById('loginBtn');
+            const btn = document.getElementById('signupBtn');
 
             message.textContent = '';
+            if (password !== confirm) {
+                message.className = 'error';
+                message.textContent = 'Passwords do not match.';
+                return;
+            }
+            if (password.length < 6) {
+                message.className = 'error';
+                message.textContent = 'Password must be at least 6 characters.';
+                return;
+            }
+
             btn.disabled = true;
-            btn.textContent = 'Logging in...';
+            btn.textContent = 'Creating account...';
 
             try {
-                const res = await fetch('/api/login', {
+                const res = await fetch('/api/signup', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ email, password })
@@ -153,42 +169,23 @@
                 const data = await res.json();
 
                 if (res.ok) {
-                    localStorage.setItem('chatbot_token', data.access_token);
                     message.className = 'success';
-                    message.textContent = '✅ Login successful! Redirecting...';
+                    message.textContent = '✅ Account created! Redirecting to login...';
                     setTimeout(() => {
-                        window.location.href = '/dashboard';
-                    }, 1000);
+                        window.location.href = '/login';
+                    }, 1500);
                 } else {
                     message.className = 'error';
-                    message.textContent = data.error || 'Login failed.';
+                    message.textContent = data.error || 'Sign-up failed.';
                     btn.disabled = false;
-                    btn.textContent = 'Login';
+                    btn.textContent = 'Sign Up';
                 }
             } catch (e) {
                 message.className = 'error';
                 message.textContent = 'Network error. Please try again.';
                 btn.disabled = false;
-                btn.textContent = 'Login';
+                btn.textContent = 'Sign Up';
             }
-        }
-
-        // Check if already logged in
-        const token = localStorage.getItem('chatbot_token');
-        if (token) {
-            fetch('/api/me', {
-                headers: { 'Authorization': 'Bearer ' + token }
-            })
-            .then(res => {
-                if (res.ok) {
-                    window.location.href = '/dashboard';
-                } else {
-                    localStorage.removeItem('chatbot_token');
-                }
-            })
-            .catch(() => {
-                localStorage.removeItem('chatbot_token');
-            });
         }
     </script>
 </body>

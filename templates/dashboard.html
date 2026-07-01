@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Knowledge Brain</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: white;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            width: 100%;
+            background: #16213e;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            font-size: 24px;
+        }
+        .header .user-email {
+            color: #94a3b8;
+            font-size: 14px;
+        }
+        .logout-btn {
+            padding: 6px 16px;
+            background: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: background 0.2s;
+        }
+        .logout-btn:hover {
+            background: #c0392b;
+        }
+        .section {
+            background: #1a1a3e;
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+        }
+        .section h2 {
+            font-size: 18px;
+            margin-bottom: 12px;
+            color: #e2e8f0;
+        }
+        .section p {
+            color: #94a3b8;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .embed-code {
+            background: #0d0d1f;
+            padding: 16px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            color: #a0aec0;
+            border: 1px solid #2d2d5e;
+            position: relative;
+        }
+        .copy-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: #6C63FF;
+            color: white;
+            border: none;
+            padding: 4px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .copy-btn:hover {
+            background: #5a52d5;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 12px;
+        }
+        .stat-card {
+            background: #0d0d1f;
+            padding: 16px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        .stat-card .number {
+            font-size: 24px;
+            font-weight: 600;
+            color: #6C63FF;
+        }
+        .stat-card .label {
+            font-size: 12px;
+            color: #94a3b8;
+            margin-top: 4px;
+        }
+        .widget-preview {
+            margin-top: 12px;
+            padding: 20px;
+            background: #0d0d1f;
+            border-radius: 8px;
+            text-align: center;
+            color: #94a3b8;
+            border: 2px dashed #2d2d5e;
+        }
+        .widget-preview .icon {
+            font-size: 36px;
+        }
+        .widget-preview .hint {
+            font-size: 13px;
+            margin-top: 8px;
+        }
+        .btn-primary {
+            background: #6C63FF;
+            color: white;
+            border: none;
+            padding: 8px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        .btn-primary:hover {
+            background: #5a52d5;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🧠 Knowledge Brain</h1>
+            <div>
+                <span class="user-email" id="userEmail">{{ user.email }}</span>
+                <button class="logout-btn" onclick="handleLogout()">Logout</button>
+            </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="section">
+            <h2>📊 Knowledge Base Stats</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="number" id="docCount">0</div>
+                    <div class="label">Documents</div>
+                </div>
+                <div class="stat-card">
+                    <div class="number" id="chunkCount">0</div>
+                    <div class="label">Chunks</div>
+                </div>
+                <div class="stat-card">
+                    <div class="number" id="pageCount">0</div>
+                    <div class="label">Pages</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Embed Widget -->
+        <div class="section">
+            <h2>📋 Embed Chat Widget on Your Website</h2>
+            <p>Copy and paste the following code into your website's HTML (before the closing <code>&lt;/body&gt;</code> tag).</p>
+            <div style="position: relative; margin-top: 12px;">
+                <div class="embed-code" id="embedCode">
+                    &lt;script&gt;
+                        window.CHATBOT_API_URL = '{{ request.url_root.rstrip('/') }}';
+                        window.CHATBOT_NAME = 'Knowledge Bot';
+                        window.CHATBOT_AVATAR = '🧠';
+                        window.CHATBOT_COLOR = '#6C63FF';
+                        window.CHATBOT_GREETING = 'Hello! Ask me anything about our documents.';
+                    &lt;/script&gt;
+                    &lt;script src="{{ request.url_root }}widget.js"&gt;&lt;/script&gt;
+                </div>
+                <button class="copy-btn" onclick="copyEmbedCode()">📋 Copy</button>
+            </div>
+            <div class="widget-preview">
+                <div class="icon">💬</div>
+                <div class="hint">Your visitors will see a chat bubble in the bottom-right corner. They must log in to use the chatbot.</div>
+            </div>
+        </div>
+
+        <!-- Quick Access -->
+        <div class="section">
+            <h2>🔗 Quick Links</h2>
+            <p>
+                <a href="/" style="color: #6C63FF; text-decoration: none;">🏠 Home</a> &nbsp;|&nbsp;
+                <a href="/login" style="color: #6C63FF; text-decoration: none;">🔐 Login Page</a> &nbsp;|&nbsp;
+                <a href="/signup" style="color: #6C63FF; text-decoration: none;">📝 Sign Up</a>
+            </p>
+        </div>
+    </div>
+
+    <script>
+        // Load stats
+        async function loadStats() {
+            const token = localStorage.getItem('chatbot_token');
+            if (!token) return;
+            try {
+                const res = await fetch('/api/stats', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    document.getElementById('docCount').textContent = data.total_documents || 0;
+                    document.getElementById('chunkCount').textContent = data.total_chunks ? data.total_chunks.toLocaleString() : 0;
+                    document.getElementById('pageCount').textContent = data.total_pages || 0;
+                }
+            } catch (e) {
+                console.error('Error loading stats:', e);
+            }
+        }
+
+        // Copy embed code
+        function copyEmbedCode() {
+            const code = document.getElementById('embedCode').textContent;
+            navigator.clipboard.writeText(code).then(() => {
+                const btn = document.querySelector('.copy-btn');
+                btn.textContent = '✅ Copied!';
+                setTimeout(() => {
+                    btn.textContent = '📋 Copy';
+                }, 2000);
+            }).catch(() => {
+                // Fallback
+                const textarea = document.createElement('textarea');
+                textarea.value = code;
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                alert('Embed code copied to clipboard!');
+            });
+        }
+
+        // Logout
+        async function handleLogout() {
+            const token = localStorage.getItem('chatbot_token');
+            try {
+                await fetch('/api/logout', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+            } catch(e) {}
+            localStorage.removeItem('chatbot_token');
+            window.location.href = '/login';
+        }
+
+        // Check auth
+        const token = localStorage.getItem('chatbot_token');
+        if (!token) {
+            window.location.href = '/login';
+        } else {
+            // Verify token
+            fetch('/api/me', {
+                headers: { 'Authorization': 'Bearer ' + token }
+            })
+            .then(res => {
+                if (!res.ok) {
+                    localStorage.removeItem('chatbot_token');
+                    window.location.href = '/login';
+                }
+            })
+            .catch(() => {
+                localStorage.removeItem('chatbot_token');
+                window.location.href = '/login';
+            });
+        }
+
+        loadStats();
+    </script>
+</body>
+</html>

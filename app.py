@@ -1,4 +1,4 @@
-# app.py – RAG Chatbot with Supabase Authentication
+# app.py – RAG Chatbot with Supabase Auth (Signup, Login, Dashboard)
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -59,7 +59,6 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Skip auth for OPTIONS preflight
         if request.method == "OPTIONS":
             return jsonify({"status": "ok"}), 200
 
@@ -70,7 +69,6 @@ def require_auth(f):
         token = auth_header.split(' ')[1]
 
         try:
-            # Verify JWT with Supabase
             user = supabase.auth.get_user(token)
             if not user or not user.user:
                 return jsonify({"error": "Invalid or expired token"}), 401
@@ -180,10 +178,51 @@ def detect_focus_command(question):
 
 # ===== AUTH ROUTES =====
 
+# ---- Login Page ----
 @app.route('/login')
 def login_page():
     return render_template("login.html")
 
+# ---- Signup Page ----
+@app.route('/signup')
+def signup_page():
+    return render_template("signup.html")
+
+# ---- API: Signup ----
+@app.route('/api/signup', methods=['POST', 'OPTIONS'])
+def signup():
+    if request.method == "OPTIONS":
+        return jsonify({"status": "ok"}), 200
+
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        password = data.get('password')
+
+        if not email or not password:
+            return jsonify({"error": "Email and password required"}), 400
+
+        # Supabase sign-up
+        response = supabase.auth.sign_up({
+            "email": email,
+            "password": password
+        })
+
+        if response.user:
+            return jsonify({
+                "user": {
+                    "email": response.user.email,
+                    "id": response.user.id
+                }
+            })
+        else:
+            return jsonify({"error": "Sign-up failed"}), 400
+
+    except Exception as e:
+        print(f"Signup error: {e}")
+        return jsonify({"error": str(e)}), 400
+
+# ---- API: Login ----
 @app.route('/api/login', methods=['POST', 'OPTIONS'])
 def login():
     if request.method == "OPTIONS":
@@ -218,6 +257,7 @@ def login():
         print(f"Login error: {e}")
         return jsonify({"error": str(e)}), 401
 
+# ---- API: Logout ----
 @app.route('/api/logout', methods=['POST'])
 @require_auth
 def logout():
@@ -227,6 +267,7 @@ def logout():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ---- API: Get current user ----
 @app.route('/api/me', methods=['GET'])
 @require_auth
 def get_user():
@@ -237,8 +278,15 @@ def get_user():
         }
     })
 
-# ===== WIDGET ROUTE =====
+# ===== DASHBOARD (protected) =====
+@app.route('/dashboard')
+@require_auth
+def dashboard():
+    # This route is called directly from the browser, so we need to render template with user info
+    # We'll pass user email via session or just render template
+    return render_template("dashboard.html", user=request.user)
 
+# ===== WIDGET ROUTE (public, but the widget itself will enforce auth) =====
 @app.route('/widget.js')
 def serve_widget():
     widget_code = """
@@ -753,14 +801,23 @@ def serve_widget():
 """
     return widget_code, 200, {'Content-Type': 'application/javascript'}
 
-# ===== MAIN PAGE =====
-
+# ===== MAIN PAGE (redirect to dashboard if logged in) =====
 @app.route('/')
 def index():
-    return render_template("index.html")
+    # Check if user is logged in via token in request
+    auth_header = request.headers.get('Authorization')
+    if auth_header and auth_header.startswith('Bearer '):
+        token = auth_header.split(' ')[1]
+        try:
+            user = supabase.auth.get_user(token)
+            if user and user.user:
+                return redirect('/dashboard')
+        except:
+            pass
+    # Otherwise show login page (or redirect to login)
+    return redirect('/login')
 
 # ===== PROTECTED CHAT API =====
-
 @app.route("/api/chat", methods=["POST", "OPTIONS"])
 @require_auth
 def chat():
@@ -827,7 +884,7 @@ def chat():
         traceback.print_exc()
         return jsonify({"answer": f"⚠️ Server error: {str(e)[:100]}"}), 500
 
-# ===== OTHER ENDPOINTS =====
+# ===== OTHER PROTECTED ENDPOINTS =====
 
 @app.route("/api/stats")
 @require_auth
