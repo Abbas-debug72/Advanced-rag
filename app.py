@@ -1,4 +1,4 @@
-# app.py – RAG Chatbot with Supabase Auth & API Keys (Service Role)
+# app.py – RAG Chatbot with Supabase Auth & API Keys (Full Debug)
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -27,7 +27,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 print("=" * 60)
-print("🚀 STARTING RAG CHATBOT (with API Keys + Service Role)")
+print("🚀 STARTING RAG CHATBOT (with API Keys + Debug)")
 print("=" * 60)
 
 app = Flask(__name__)
@@ -78,49 +78,6 @@ def require_auth(f):
         if request.method == "OPTIONS":
             return jsonify({"status": "ok"}), 200
 
-        # 1. Try JWT / cookie
-        token = get_token_from_request()
-        if token:
-            try:
-                user = supabase.auth.get_user(token)
-                if user and user.user:
-                    request.user = user.user
-                    return f(*args, **kwargs)
-            except Exception as e:
-                print(f"JWT error: {e}")
-
-        # 2. Try API key
-        api_key = get_api_key_from_request()
-        print(f"🔑 API Key received: {api_key}")
-        if api_key:
-            try:
-                # Create a fresh admin client to bypass RLS
-                admin_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-                result = admin_client.table('users').select('*').eq('api_key', api_key).execute()
-                print(f"🔍 Supabase result: {result.data}")
-                if result.data and len(result.data) > 0:
-                    user_data = result.data[0]
-                    # Get the full user from auth (admin)
-                    user = supabase.auth.admin.get_user_by_id(user_data['id'])
-                    if user and user.user:
-                        request.user = user.user
-                        return f(*args, **kwargs)
-                else:
-                    print("❌ No user found with that API key")
-            except Exception as e:
-                print(f"❌ API key lookup error: {e}")
-                import traceback
-                traceback.print_exc()
-
-        print("❌ Authentication failed")
-        return jsonify({"error": "Missing or invalid authentication"}), 401
-
-    return decorated
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if request.method == "OPTIONS":
-            return jsonify({"status": "ok"}), 200
-
         # 1. Try JWT / cookie (for dashboard)
         token = get_token_from_request()
         if token:
@@ -137,8 +94,9 @@ def require_auth(f):
         print(f"🔑 API Key received: {api_key}")
         if api_key:
             try:
-                # Use admin client to bypass RLS
-                result = supabase_admin.table('users').select('*').eq('api_key', api_key).execute()
+                # Use fresh admin client to bypass RLS
+                admin_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+                result = admin_client.table('users').select('*').eq('api_key', api_key).execute()
                 print(f"🔍 Supabase result: {result.data}")
                 if result.data and len(result.data) > 0:
                     user_data = result.data[0]
@@ -150,7 +108,9 @@ def require_auth(f):
                 else:
                     print("❌ No user found with that API key")
             except Exception as e:
-                print(f"API key lookup error: {e}")
+                print(f"❌ API key lookup error: {e}")
+                import traceback
+                traceback.print_exc()
 
         print("❌ Authentication failed")
         return jsonify({"error": "Missing or invalid authentication"}), 401
@@ -245,7 +205,6 @@ def detect_focus_command(question):
 # ===== USER MANAGEMENT =====
 def ensure_user_has_api_key(user_id, email):
     try:
-        # Use admin client to check / insert
         result = supabase_admin.table('users').select('api_key').eq('id', user_id).execute()
         if result.data and len(result.data) > 0:
             return result.data[0]['api_key']
@@ -260,6 +219,29 @@ def ensure_user_has_api_key(user_id, email):
     except Exception as e:
         print(f"Error ensuring API key: {e}")
         return None
+
+# ===== DEBUG ENDPOINTS =====
+
+@app.route('/api/debug-headers', methods=['GET'])
+def debug_headers():
+    """Return all request headers to verify X-API-Key is received."""
+    return jsonify(dict(request.headers))
+
+@app.route('/api/test-key', methods=['GET'])
+def test_key():
+    """Test if the provided API key exists in the users table."""
+    api_key = request.headers.get('X-API-Key')
+    if not api_key:
+        return jsonify({"error": "No API key provided"}), 400
+    try:
+        result = supabase_admin.table('users').select('*').eq('api_key', api_key).execute()
+        return jsonify({
+            "key_sent": api_key,
+            "result": result.data,
+            "count": len(result.data)
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # ===== AUTH ROUTES =====
 
@@ -840,24 +822,6 @@ def debug():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-@app.route('/api/test-key', methods=['GET'])
-def test_key():
-    api_key = request.headers.get('X-API-Key')
-    if not api_key:
-        return jsonify({"error": "No API key provided"}), 400
-    try:
-        # Use admin client
-        result = supabase_admin.table('users').select('*').eq('api_key', api_key).execute()
-        return jsonify({
-            "key_sent": api_key,
-            "result": result.data,
-            "count": len(result.data)
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
 
 if __name__ == "__main__":
     print("\n🚀 Server running on http://0.0.0.0:5000")
