@@ -117,6 +117,7 @@
         .api-key-box code {
             color: #6C63FF;
             font-size: 14px;
+            word-break: break-all;
         }
         .copy-key-btn {
             background: #6C63FF;
@@ -126,8 +127,14 @@
             border-radius: 6px;
             cursor: pointer;
             font-size: 12px;
+            flex-shrink: 0;
         }
         .copy-key-btn:hover { background: #5a52d5; }
+        .warning-note {
+            margin-top: 12px;
+            color: #fbbf24;
+            font-size: 13px;
+        }
     </style>
 </head>
 <body>
@@ -153,7 +160,7 @@
             <h2>🔑 Your API Key</h2>
             <p>Use this API key in your widget embed code. It uniquely identifies you.</p>
             <div class="api-key-box">
-                <code id="apiKeyDisplay">Loading...</code>
+                <code id="apiKeyDisplay">{{ api_key }}</code>
                 <button class="copy-key-btn" onclick="copyApiKey()">📋 Copy</button>
             </div>
         </div>
@@ -164,19 +171,19 @@
             <div style="position: relative; margin-top: 12px;">
                 <div class="embed-code" id="embedCode">
                     &lt;script&gt;
-                        window.CHATBOT_API_URL = '{{ request.url_root.rstrip('/') }}';
+                        window.CHATBOT_API_URL = 'https://advanced-rag-production.up.railway.app';
                         window.CHATBOT_NAME = 'Knowledge Bot';
                         window.CHATBOT_AVATAR = '🧠';
                         window.CHATBOT_COLOR = '#6C63FF';
                         window.CHATBOT_GREETING = 'Hello! Ask me anything about our documents.';
-                        window.CHATBOT_API_KEY = 'YOUR_API_KEY_HERE';
+                        window.CHATBOT_API_KEY = '{{ api_key }}';
                     &lt;/script&gt;
-                    &lt;script src="{{ request.url_root }}widget.js"&gt;&lt;/script&gt;
+                    &lt;script src="https://advanced-rag-production.up.railway.app/widget.js"&gt;&lt;/script&gt;
                 </div>
                 <button class="copy-btn" onclick="copyEmbedCode()">📋 Copy</button>
             </div>
-            <p style="margin-top: 12px; color: #94a3b8; font-size: 13px;">
-                ⚠️ Replace <code>YOUR_API_KEY_HERE</code> with your actual API key shown above.
+            <p class="warning-note">
+                ⚠️ This code already contains your unique API key. Do not share it publicly.
             </p>
         </div>
     </div>
@@ -200,24 +207,6 @@
                     document.getElementById('pageCount').textContent = data.total_pages || 0;
                 }
             } catch (e) { console.error('Stats error:', e); }
-        }
-
-        async function loadApiKey() {
-            try {
-                const res = await fetch('/api/api_key', {
-                    headers: { 'Authorization': 'Bearer ' + token }
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    const key = data.api_key;
-                    document.getElementById('apiKeyDisplay').textContent = key;
-                    // Update embed code with the key
-                    const embed = document.getElementById('embedCode');
-                    embed.innerHTML = embed.innerHTML.replace('YOUR_API_KEY_HERE', key);
-                } else {
-                    document.getElementById('apiKeyDisplay').textContent = '❌ Failed to load';
-                }
-            } catch (e) { console.error('API key error:', e); }
         }
 
         function copyApiKey() {
@@ -250,7 +239,6 @@
         }
 
         loadStats();
-        loadApiKey();
     </script>
 </body>
 </html>

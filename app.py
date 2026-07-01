@@ -387,11 +387,19 @@ def get_api_key():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ===== DASHBOARD =====
+# ===== DASHBOARD (passes API key to template) =====
 @app.route('/dashboard')
 @require_auth
 def dashboard():
-    return render_template("dashboard.html", user=request.user)
+    user_id = request.user.id
+    api_key = None
+    try:
+        result = supabase_admin.table('users').select('api_key').eq('id', user_id).execute()
+        if result.data and len(result.data) > 0:
+            api_key = result.data[0]['api_key']
+    except Exception as e:
+        print(f"Error fetching API key: {e}", flush=True)
+    return render_template("dashboard.html", user=request.user, api_key=api_key)
 
 # ===== WIDGET ROUTE (public) =====
 @app.route('/widget.js')
