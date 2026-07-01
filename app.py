@@ -1,4 +1,4 @@
-# app.py – RAG Chatbot with Supabase Auth (Signup, Login, Dashboard)
+# app.py – RAG Chatbot with Supabase Auth (Cookie + Header)
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -10,7 +10,7 @@ import json
 import logging
 import traceback
 from functools import wraps
-from flask import Flask, request, jsonify, render_template, session, redirect, url_for
+from flask import Flask, request, jsonify, render_template, session, redirect, url_for, make_response
 from flask_cors import CORS
 from pinecone import Pinecone
 from groq import Groq
@@ -55,6 +55,18 @@ if not SUPABASE_URL or not SUPABASE_KEY or not SUPABASE_JWT_SECRET:
 # Initialize Supabase client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# ===== HELPER: Extract token from cookie or header =====
+def get_token_from_request():
+    # First check Authorization header (for widget API calls)
+    auth_header = request.headers.get('Authorization')
+    if auth_header and auth_header.startswith('Bearer '):
+        return auth_header.split(' ')[1]
+    # Then check cookie (for page navigation)
+    token = request.cookies.get('chatbot_token')
+    if token:
+        return token
+    return None
+
 # ===== AUTH DECORATOR =====
 def require_auth(f):
     @wraps(f)
@@ -62,11 +74,9 @@ def require_auth(f):
         if request.method == "OPTIONS":
             return jsonify({"status": "ok"}), 200
 
-        auth_header = request.headers.get('Authorization')
-        if not auth_header or not auth_header.startswith('Bearer '):
+        token = get_token_from_request()
+        if not token:
             return jsonify({"error": "Missing or invalid token"}), 401
-
-        token = auth_header.split(' ')[1]
 
         try:
             user = supabase.auth.get_user(token)
@@ -202,7 +212,6 @@ def signup():
         if not email or not password:
             return jsonify({"error": "Email and password required"}), 400
 
-        # Supabase sign-up
         response = supabase.auth.sign_up({
             "email": email,
             "password": password
@@ -222,7 +231,7 @@ def signup():
         print(f"Signup error: {e}")
         return jsonify({"error": str(e)}), 400
 
-# ---- API: Login ----
+# ---- API: Login (sets HTTP-only cookie) ----
 @app.route('/api/login', methods=['POST', 'OPTIONS'])
 def login():
     if request.method == "OPTIONS":
@@ -242,14 +251,25 @@ def login():
         })
 
         if response.user:
-            return jsonify({
+            # Create JSON response with cookie
+            resp = make_response(jsonify({
                 "access_token": response.session.access_token,
                 "refresh_token": response.session.refresh_token,
                 "user": {
                     "email": response.user.email,
                     "id": response.user.id
                 }
-            })
+            }))
+            # Set HTTP-only cookie (secure, not accessible via JavaScript)
+            resp.set_cookie(
+                'chatbot_token',
+                response.session.access_token,
+                httponly=True,
+                secure=True,        # set to False if testing locally without HTTPS
+                samesite='Lax',
+                max_age=60*60*24*7  # 7 days
+            )
+            return resp
         else:
             return jsonify({"error": "Invalid credentials"}), 401
 
@@ -257,13 +277,15 @@ def login():
         print(f"Login error: {e}")
         return jsonify({"error": str(e)}), 401
 
-# ---- API: Logout ----
+# ---- API: Logout (clears cookie) ----
 @app.route('/api/logout', methods=['POST'])
 @require_auth
 def logout():
     try:
         supabase.auth.sign_out()
-        return jsonify({"success": True})
+        resp = jsonify({"success": True})
+        resp.set_cookie('chatbot_token', '', expires=0)
+        return resp
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -282,8 +304,6 @@ def get_user():
 @app.route('/dashboard')
 @require_auth
 def dashboard():
-    # This route is called directly from the browser, so we need to render template with user info
-    # We'll pass user email via session or just render template
     return render_template("dashboard.html", user=request.user)
 
 # ===== WIDGET ROUTE (public, but the widget itself will enforce auth) =====
@@ -801,20 +821,19 @@ def serve_widget():
 """
     return widget_code, 200, {'Content-Type': 'application/javascript'}
 
-# ===== MAIN PAGE (redirect to dashboard if logged in) =====
+# ===== MAIN PAGE (redirect to dashboard if logged in, else login) =====
 @app.route('/')
 def index():
-    # Check if user is logged in via token in request
-    auth_header = request.headers.get('Authorization')
-    if auth_header and auth_header.startswith('Bearer '):
-        token = auth_header.split(' ')[1]
+    # Check if cookie exists
+    token = request.cookies.get('chatbot_token')
+    if token:
+        # Verify token with Supabase
         try:
             user = supabase.auth.get_user(token)
             if user and user.user:
                 return redirect('/dashboard')
         except:
             pass
-    # Otherwise show login page (or redirect to login)
     return redirect('/login')
 
 # ===== PROTECTED CHAT API =====
