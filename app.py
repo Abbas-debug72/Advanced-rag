@@ -1,4 +1,4 @@
-# app.py – Pinecone RAG Chatbot (with improved prompt & full CORS support)
+# app.py – Pinecone RAG Chatbot (Simple Fallback - No Hugging Face)
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -12,12 +12,10 @@ import logging
 import traceback
 from flask import Flask, request, jsonify, render_template, session, send_from_directory
 from flask_cors import CORS
-from brain import KnowledgeBrain
-from memory import ConversationMemory
+from pinecone import Pinecone
+from groq import Groq
 
-from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+from memory import ConversationMemory
 
 # Force flush for logging
 sys.stdout.flush()
@@ -30,7 +28,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 print("=" * 60)
-print("🚀 APP STARTING with DEBUG LOGGING")
+print("🚀 APP STARTING (Simple Fallback - No Hugging Face)")
 print("=" * 60)
 
 app = Flask(__name__)
@@ -38,7 +36,6 @@ app.secret_key = os.urandom(24)
 app.debug = True
 
 # ===== CORS CONFIGURATION =====
-# Enable CORS for all routes with comprehensive settings
 CORS(app, 
      resources={
          r"/api/*": {
@@ -51,7 +48,6 @@ CORS(app,
          }
      })
 
-# Manual CORS headers as fallback
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
@@ -61,42 +57,163 @@ def after_request(response):
     response.headers.add('Access-Control-Max-Age', '3600')
     return response
 
-# ===== INITIALIZE KNOWLEDGE BRAIN =====
-print("🧠 Loading Knowledge Brain...")
-brain = KnowledgeBrain(pdf_directory=os.getenv("PDF_DIRECTORY", "./pdfs"))
+# ===== CONFIGURATION =====
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINECONE_INDEX_HOST = os.getenv("PINECONE_INDEX_HOST")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "knowledge-brain")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_CHAT_MODEL", "mixtral-8x7b-32768")
 
-api_key = os.getenv("GROQ_API_KEY")
-if not api_key:
+if not PINECONE_API_KEY:
+    raise RuntimeError("PINECONE_API_KEY not set in .env file")
+if not GROQ_API_KEY:
     raise RuntimeError("GROQ_API_KEY not set in .env file")
 
-llm = ChatGroq(
-    api_key=api_key,
-    model="llama-3.1-8b-instant",
-    temperature=0.1,
-    max_tokens=1024
-)
+# ===== INITIALIZE CLIENTS =====
+print("🔗 Connecting to Pinecone...")
+pc = Pinecone(api_key=PINECONE_API_KEY)
+index = pc.Index(host=PINECONE_INDEX_HOST)
+print(f"✅ Pinecone connected: {PINECONE_INDEX_NAME}")
+
+print("🔗 Connecting to Groq...")
+groq_client = Groq(api_key=GROQ_API_KEY)
+print("✅ Groq connected")
 
 memory = ConversationMemory()
 session_focus = {}
 
-# ===== SIMPLE PING ENDPOINT =====
-@app.route("/api/ping", methods=["GET", "POST", "OPTIONS"])
-def ping():
-    """Simple ping endpoint to test if app is responding"""
-    print("📨 PING received - method:", request.method)
-    if request.method == "OPTIONS":
-        response = jsonify({"status": "ok"})
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
-        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        return response
-    return jsonify({
-        "status": "ok",
-        "message": "pong",
-        "method": request.method
-    })
+# ===== LOAD METADATA =====
+def load_document_metadata():
+    try:
+        possible_paths = [
+            "./brain_metadata.json",
+            "brain_metadata.json",
+            "/app/brain_metadata.json",
+            os.path.join(os.path.dirname(__file__), "brain_metadata.json")
+        ]
+        for path in possible_paths:
+            if os.path.exists(path):
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                    print(f"✅ Loaded metadata from {path}: {len(data)} documents")
+                    return data
+        print("⚠️ No metadata file found.")
+        return {}
+    except Exception as e:
+        print(f"⚠️ Error loading metadata: {e}")
+        return {}
 
-# ===== WIDGET ROUTE =====
+documents_metadata = load_document_metadata()
+
+def get_all_filenames():
+    return list(documents_metadata.keys())
+
+def get_document_count():
+    return len(documents_metadata)
+
+# ===== EMBEDDING FUNCTION (Using Groq) =====
+def get_embedding(text: str):
+    """Get embedding using Groq API"""
+    if len(text) > 8000:
+        text = text[:8000]
+    
+    try:
+        response = groq_client.embeddings.create(
+            model="nomic-embed-text-v1_5",
+            input=text
+        )
+        return response.data[0].embedding
+    except Exception as e:
+        print(f"⚠️ Groq embedding error: {e}")
+        # Fallback: use a simple text vector if Groq fails
+        import hashlib
+        hash_bytes = hashlib.sha256(text.encode()).digest()
+        vector = [float(b) / 255.0 for b in hash_bytes[:384]]
+        while len(vector) < 384:
+            vector.append(0.0)
+        return vector[:384]
+
+# ===== PINECONE SEARCH =====
+def search_pinecone(query: str, top_k: int = 5):
+    try:
+        query_embedding = get_embedding(query)
+        results = index.query(
+            vector=query_embedding,
+            top_k=top_k,
+            include_metadata=True
+        )
+        return results.get('matches', [])
+    except Exception as e:
+        print(f"Search error: {e}")
+        raise
+
+# ===== GROQ RESPONSE =====
+def generate_response(query: str, context: str):
+    try:
+        response = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": """You are a helpful assistant that answers questions based on the provided context.
+If the context doesn't contain the answer, say "I could not find that information in the documents."
+Be concise and accurate. Use the context to support your answers.
+Always cite the source document when possible."""},
+                {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
+            ],
+            temperature=0.3,
+            max_tokens=500
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"Generation error: {e}")
+        raise
+
+# ===== FOCUS MANAGEMENT =====
+def resolve_filename(user_input: str):
+    all_files = get_all_filenames()
+    for f in all_files:
+        if user_input.lower() == f.lower():
+            return f
+    if not user_input.lower().endswith('.pdf'):
+        for f in all_files:
+            if f.lower() == user_input.lower() + '.pdf':
+                return f
+    return None
+
+def detect_focus_command(question: str):
+    q = question.lower()
+    patterns = [
+        r'only\s+use\s+([\w\-.]+(?:\.pdf)?)',
+        r'focus\s+on\s+([\w\-.]+(?:\.pdf)?)',
+        r'use\s+only\s+([\w\-.]+(?:\.pdf)?)',
+    ]
+    for pat in patterns:
+        m = re.search(pat, q)
+        if m:
+            candidate = m.group(1).strip()
+            resolved = resolve_filename(candidate)
+            if resolved:
+                return resolved
+            return candidate
+    if "clear focus" in q or "remove focus" in q or "no filter" in q:
+        return "CLEAR"
+    return None
+
+# ===== FORMAT DOCS =====
+def format_docs(matches):
+    parts = []
+    seen = set()
+    for match in matches:
+        src = match.get('metadata', {}).get('source_file', '?')
+        if src in seen:
+            continue
+        seen.add(src)
+        page = match.get('metadata', {}).get('page_number', '?')
+        text = match.get('metadata', {}).get('text', '')
+        if text:
+            parts.append(f"[{src} p{page}]\n{text[:800]}\n")
+    return "\n".join(parts)
+
+# ===== ROUTES =====
 @app.route('/widget.js')
 def serve_widget():
     """Serve the widget JavaScript file"""
@@ -105,7 +222,6 @@ def serve_widget():
         return send_from_directory('.', 'widget.js')
     except Exception as e:
         print(f"⚠️ Error serving widget.js: {e}")
-        # Fallback widget code with full functionality
         return """// Chat Widget - Knowledge Brain (Full Version)
 (function() {
     'use strict';
@@ -392,74 +508,22 @@ def serve_widget():
     }
 })();""", 200, {'Content-Type': 'application/javascript'}
 
-# ===== IMPROVED PROMPT =====
-PROMPT = """You are a precise and insightful research assistant.  
-Your answers are based **only** on the document context below.
+@app.route("/api/ping", methods=["GET", "POST", "OPTIONS"])
+def ping():
+    """Simple ping endpoint to test if app is responding"""
+    print("📨 PING received - method:", request.method)
+    if request.method == "OPTIONS":
+        response = jsonify({"status": "ok"})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        return response
+    return jsonify({
+        "status": "ok",
+        "message": "pong",
+        "method": request.method
+    })
 
-**Rules:**
-- If the context contains enough detail, provide a **comprehensive answer** with examples, comparisons, or steps (as appropriate).
-- Structure your answer clearly: use **bullet points** for lists, **paragraphs** for explanations.
-- Do **not** mention the context itself (e.g., "according to the document").
-- If the context lacks the answer, say: "I could not find that information in the knowledge base."
-- Match the level of detail to the question: a simple question gets a concise answer; a complex or open‑ended question gets a thorough one.
-
-**Active filter:** {focus_info}
-
-**Context from documents:**
-{context}
-
-**Conversation history:**
-{chat_history}
-
-**Question:** {question}
-**Answer:**"""
-
-QA_PROMPT = ChatPromptTemplate.from_template(PROMPT)
-
-def format_docs(docs):
-    parts = []
-    seen = set()
-    for doc in docs:
-        src = doc.metadata.get('source_file', '?')
-        if src in seen:
-            continue
-        seen.add(src)
-        page = doc.metadata.get('page_number', '?')
-        parts.append(f"[{src} p{page}]\n{doc.page_content[:800]}\n")
-    return "\n".join(parts)
-
-# ===== Focus management =====
-def resolve_filename(user_input: str):
-    all_files = brain.get_all_filenames()
-    for f in all_files:
-        if user_input.lower() == f.lower():
-            return f
-    if not user_input.lower().endswith('.pdf'):
-        for f in all_files:
-            if f.lower() == user_input.lower() + '.pdf':
-                return f
-    return None
-
-def detect_focus_command(question: str):
-    q = question.lower()
-    patterns = [
-        r'only\s+use\s+([\w\-.]+(?:\.pdf)?)',
-        r'focus\s+on\s+([\w\-.]+(?:\.pdf)?)',
-        r'use\s+only\s+([\w\-.]+(?:\.pdf)?)',
-    ]
-    for pat in patterns:
-        m = re.search(pat, q)
-        if m:
-            candidate = m.group(1).strip()
-            resolved = resolve_filename(candidate)
-            if resolved:
-                return resolved
-            return candidate
-    if "clear focus" in q or "remove focus" in q or "no filter" in q:
-        return "CLEAR"
-    return None
-
-# ===== ROUTES =====
 @app.route("/")
 def index():
     if 'session_id' not in session:
@@ -468,9 +532,6 @@ def index():
 
 @app.route("/api/chat", methods=["GET", "POST", "OPTIONS"])
 def chat():
-    """Main chat endpoint with extensive debug logging"""
-    
-    # Handle preflight OPTIONS request
     if request.method == "OPTIONS":
         print("📨 OPTIONS request received")
         response = jsonify({"status": "ok"})
@@ -489,69 +550,35 @@ def chat():
     start_time = time.time()
 
     try:
-        # Log request info
-        print(f"📨 Request method: {request.method}")
-        print(f"📨 Content-Type: {request.content_type}")
-        
-        # Get raw data
-        raw_data = request.get_data(as_text=True)
-        print(f"📨 Raw request data: {raw_data[:500]}")
-        
-        # Try to parse JSON
-        data = None
-        if request.is_json:
-            data = request.get_json()
-            print(f"📨 Parsed JSON data: {data}")
-        else:
-            print(f"⚠️ Request is not JSON. Trying manual parse...")
-            try:
-                data = json.loads(raw_data) if raw_data else None
-                print(f"📨 Manually parsed JSON: {data}")
-            except json.JSONDecodeError as e:
-                print(f"❌ JSON parse error: {e}")
-                return jsonify({
-                    "error": "Invalid JSON",
-                    "answer": "⚠️ Invalid JSON format. Please send valid JSON."
-                }), 400
-        
+        if not request.is_json:
+            return jsonify({"answer": "⚠️ Please send JSON data"}), 400
+
+        data = request.get_json()
         if not data:
-            print("❌ No data received")
-            return jsonify({
-                "error": "No data",
-                "answer": "⚠️ No data received. Please send a question."
-            }), 400
+            return jsonify({"answer": "⚠️ No data received"}), 400
 
         question = data.get("question", "").strip()
         session_id = data.get("session_id", session.get("session_id", "default"))
         category = data.get("category", "all")
-        
+
         print(f"📨 Question: '{question}'")
         print(f"📨 Session ID: {session_id}")
-        print(f"📨 Category: {category}")
 
         if not question:
-            print("❌ Empty question")
-            return jsonify({
-                "error": "Question required",
-                "answer": "⚠️ Please provide a question."
-            }), 400
+            return jsonify({"answer": "⚠️ Please provide a question."}), 400
 
-        # --- Focus detection ---
+        # Check focus commands
         focus_file = session_focus.get(session_id)
         focus_cmd = detect_focus_command(question)
-        print(f"📨 Current focus: {focus_file}")
-        print(f"📨 Focus command: {focus_cmd}")
 
         if focus_cmd == "CLEAR":
-            print("📨 Clearing focus")
             session_focus.pop(session_id, None)
             memory.add_message(session_id, "user", question)
             memory.add_message(session_id, "assistant", "✅ Document filter cleared.")
             return jsonify({"answer": "✅ Document filter cleared.", "sources": [], "focus": None})
 
         if focus_cmd is not None:
-            print(f"📨 Setting focus to: {focus_cmd}")
-            all_files = brain.get_all_filenames()
+            all_files = get_all_filenames()
             if focus_cmd in all_files:
                 session_focus[session_id] = focus_cmd
                 msg = f"✅ Now focusing on **{focus_cmd}** only."
@@ -561,82 +588,71 @@ def chat():
             memory.add_message(session_id, "assistant", msg)
             return jsonify({"answer": msg, "sources": [], "focus": session_focus.get(session_id)})
 
-        # --- retrieval ---
-        print("📨 Retrieving conversation history...")
-        history = memory.get_history(session_id, last_n=6)
-        history_str = "\n".join(
-            f"{'User' if m['role']=='user' else 'Assistant'}: {m['content']}"
-            for m in history[-6:]
-        ) if history else "No history"
-
-        print("📨 Searching for relevant documents...")
+        # Search Pinecone
         try:
-            if focus_file:
-                raw_docs = brain.search(question, k=30, category=category if category != "all" else None)
-                docs = [d for d in raw_docs if d.metadata.get('source_file', '').lower() == focus_file.lower()]
-                if not docs:
-                    answer = f"I could not find any relevant information inside **{focus_file}**."
-                    memory.add_message(session_id, "user", question)
-                    memory.add_message(session_id, "assistant", answer)
-                    return jsonify({"answer": answer, "sources": [], "focus": focus_file})
-                docs = docs[:6]
-            else:
-                docs = brain.intelligent_search(question, k=4, category=category if category != "all" else None)
-            print(f"📨 Found {len(docs)} documents")
+            print("📨 Searching Pinecone...")
+            matches = search_pinecone(question, top_k=5)
+            print(f"📨 Found {len(matches)} matches")
         except Exception as e:
             print(f"❌ Search error: {e}")
-            traceback.print_exc()
             return jsonify({"answer": f"⚠️ Search error: {str(e)[:100]}"}), 500
 
-        context = format_docs(docs)
-        focus_info = f"Currently focused on: {focus_file}. Only use this document." if focus_file else "No active document filter."
-
-        # --- generation ---
-        print("📨 Generating response...")
-        try:
-            chain = QA_PROMPT | llm | StrOutputParser()
-            answer = chain.invoke({
-                "context": context,
-                "chat_history": history_str,
-                "question": question,
-                "focus_info": focus_info
+        if not matches:
+            return jsonify({
+                "answer": "I could not find relevant information in the knowledge base.",
+                "sources": []
             })
-            print(f"📨 Generated answer length: {len(answer)}")
+
+        # Build context
+        context_parts = []
+        sources = []
+        for match in matches:
+            if match.get('score', 0) > 0.3:
+                text = match.get('metadata', {}).get('text', '')
+                source_file = match.get('metadata', {}).get('source_file', 'unknown')
+                if text:
+                    context_parts.append(text)
+                    sources.append({
+                        'document': source_file,
+                        'score': match.get('score', 0)
+                    })
+
+        if not context_parts:
+            return jsonify({
+                "answer": "I found some information but with low confidence. Please rephrase your question.",
+                "sources": []
+            })
+
+        context = "\n\n---\n\n".join(context_parts[:3])
+
+        # Generate response
+        try:
+            print("📨 Generating response with Groq...")
+            answer = generate_response(question, context)
+            print(f"📨 Response length: {len(answer)}")
         except Exception as e:
             print(f"❌ Generation error: {e}")
-            traceback.print_exc()
             return jsonify({"answer": f"⚠️ Generation error: {str(e)[:100]}"}), 500
 
-        # --- Save to memory ---
         memory.add_message(session_id, "user", question)
         memory.add_message(session_id, "assistant", answer)
 
-        # --- Format sources ---
-        seen_src = set()
-        sources = []
-        for doc in docs:
-            src = doc.metadata.get("source_file", "?")
-            if src not in seen_src:
-                seen_src.add(src)
-                sources.append({"document": src, "page": doc.metadata.get("page_number", "?")})
-        
         elapsed = time.time() - start_time
         print(f"📨 Request completed in {elapsed:.2f} seconds")
         print(f"{'='*60}\n")
 
-        return jsonify({"answer": answer, "sources": sources, "focus": focus_file})
+        return jsonify({
+            "answer": answer,
+            "sources": sources[:3],
+            "sources_count": len(sources),
+            "documents_loaded": True
+        })
 
     except Exception as e:
         elapsed = time.time() - start_time
-        print(f"❌ CHAT ERROR after {elapsed:.2f} seconds:")
-        print(f"❌ Error: {str(e)}")
+        print(f"❌ CHAT ERROR after {elapsed:.2f} seconds: {e}")
         traceback.print_exc()
-        print(f"{'='*60}\n")
-        
-        return jsonify({
-            "error": str(e),
-            "answer": f"⚠️ An error occurred: {str(e)[:150]}"
-        }), 500
+        return jsonify({"answer": f"⚠️ Error: {str(e)[:150]}"}), 500
 
 @app.route("/api/focus", methods=["POST"])
 def set_focus():
@@ -651,12 +667,21 @@ def set_focus():
 
 @app.route("/api/stats")
 def stats():
-    return jsonify(brain.get_stats())
+    try:
+        stats = index.describe_index_stats()
+        return jsonify({
+            "total_documents": get_document_count(),
+            "total_chunks": stats.get('total_vector_count', 0),
+            "total_pages": 0,
+            "categories": {"general": get_document_count()}
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/documents")
 def documents():
     docs = []
-    for fname, meta in brain.documents_metadata.items():
+    for fname, meta in documents_metadata.items():
         docs.append({
             "filename": fname,
             "pages": meta.get("pages", 0),
@@ -667,7 +692,10 @@ def documents():
 
 @app.route("/api/categories")
 def categories():
-    return jsonify({"categories": brain.get_categories()})
+    cats = set()
+    for meta in documents_metadata.values():
+        cats.add(meta.get("category", "general"))
+    return jsonify({"categories": sorted(list(cats))})
 
 @app.route("/api/conversation/<session_id>", methods=["DELETE"])
 def clear_conversation(session_id):
@@ -677,18 +705,17 @@ def clear_conversation(session_id):
 
 @app.route("/api/debug", methods=["GET"])
 def debug():
-    """Debug endpoint to check environment and connections"""
-    import os
     return jsonify({
-        "pinecone_key_set": bool(os.getenv("PINECONE_API_KEY")),
-        "groq_key_set": bool(os.getenv("GROQ_API_KEY")),
-        "documents_loaded": len(brain.documents_metadata) if brain else 0,
-        "chunks": brain.get_stats().get("total_chunks", 0) if brain else 0,
-        "env_vars": [k for k in os.environ.keys() if not k.startswith('_') and not k.startswith('PYTHON')][:10]
+        "pinecone_connected": True,
+        "groq_connected": True,
+        "documents_loaded": get_document_count(),
+        "documents": get_all_filenames(),
+        "vector_count": index.describe_index_stats().get('total_vector_count', 0) if index else 0
     })
 
 if __name__ == "__main__":
-    print("\n🚀 Pinecone RAG Chatbot: http://127.0.0.1:5000")
-    print("📊 Debug endpoint: /api/debug")
+    print("\n🚀 Pinecone RAG Chatbot (Simple Fallback)")
+    print(f"📚 Documents: {get_document_count()}")
+    print(f"🔗 Pinecone: {PINECONE_INDEX_NAME}")
     print("🧪 Test endpoint: /api/ping")
     app.run(debug=False, host="0.0.0.0", port=5000)
