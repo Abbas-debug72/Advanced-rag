@@ -78,6 +78,49 @@ def require_auth(f):
         if request.method == "OPTIONS":
             return jsonify({"status": "ok"}), 200
 
+        # 1. Try JWT / cookie
+        token = get_token_from_request()
+        if token:
+            try:
+                user = supabase.auth.get_user(token)
+                if user and user.user:
+                    request.user = user.user
+                    return f(*args, **kwargs)
+            except Exception as e:
+                print(f"JWT error: {e}")
+
+        # 2. Try API key
+        api_key = get_api_key_from_request()
+        print(f"🔑 API Key received: {api_key}")
+        if api_key:
+            try:
+                # Create a fresh admin client to bypass RLS
+                admin_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+                result = admin_client.table('users').select('*').eq('api_key', api_key).execute()
+                print(f"🔍 Supabase result: {result.data}")
+                if result.data and len(result.data) > 0:
+                    user_data = result.data[0]
+                    # Get the full user from auth (admin)
+                    user = supabase.auth.admin.get_user_by_id(user_data['id'])
+                    if user and user.user:
+                        request.user = user.user
+                        return f(*args, **kwargs)
+                else:
+                    print("❌ No user found with that API key")
+            except Exception as e:
+                print(f"❌ API key lookup error: {e}")
+                import traceback
+                traceback.print_exc()
+
+        print("❌ Authentication failed")
+        return jsonify({"error": "Missing or invalid authentication"}), 401
+
+    return decorated
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if request.method == "OPTIONS":
+            return jsonify({"status": "ok"}), 200
+
         # 1. Try JWT / cookie (for dashboard)
         token = get_token_from_request()
         if token:
@@ -797,6 +840,24 @@ def debug():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/test-key', methods=['GET'])
+def test_key():
+    api_key = request.headers.get('X-API-Key')
+    if not api_key:
+        return jsonify({"error": "No API key provided"}), 400
+    try:
+        # Use admin client
+        result = supabase_admin.table('users').select('*').eq('api_key', api_key).execute()
+        return jsonify({
+            "key_sent": api_key,
+            "result": result.data,
+            "count": len(result.data)
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 
 if __name__ == "__main__":
     print("\n🚀 Server running on http://0.0.0.0:5000")
