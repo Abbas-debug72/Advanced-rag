@@ -188,14 +188,30 @@ def detect_focus_command(question):
 
 # ===== AUTH ROUTES =====
 
-# ---- Login Page ----
+# ---- Login Page (with server-side redirect) ----
 @app.route('/login')
 def login_page():
+    token = request.cookies.get('chatbot_token')
+    if token:
+        try:
+            user = supabase.auth.get_user(token)
+            if user and user.user:
+                return redirect('/dashboard')
+        except:
+            pass
     return render_template("login.html")
 
-# ---- Signup Page ----
+# ---- Signup Page (with server-side redirect) ----
 @app.route('/signup')
 def signup_page():
+    token = request.cookies.get('chatbot_token')
+    if token:
+        try:
+            user = supabase.auth.get_user(token)
+            if user and user.user:
+                return redirect('/dashboard')
+        except:
+            pass
     return render_template("signup.html")
 
 # ---- API: Signup ----
@@ -260,14 +276,14 @@ def login():
                     "id": response.user.id
                 }
             }))
-            # Set HTTP-only cookie (secure, not accessible via JavaScript)
+            # Set HTTP-only cookie (secure=False for HTTP, set domain if needed)
             resp.set_cookie(
                 'chatbot_token',
                 response.session.access_token,
                 httponly=True,
-                secure=True,        # set to False if testing locally without HTTPS
+                secure=False,          # Set to True if using HTTPS
                 samesite='Lax',
-                max_age=60*60*24*7  # 7 days
+                max_age=60*60*24*7      # 7 days
             )
             return resp
         else:
@@ -824,10 +840,8 @@ def serve_widget():
 # ===== MAIN PAGE (redirect to dashboard if logged in, else login) =====
 @app.route('/')
 def index():
-    # Check if cookie exists
     token = request.cookies.get('chatbot_token')
     if token:
-        # Verify token with Supabase
         try:
             user = supabase.auth.get_user(token)
             if user and user.user:
