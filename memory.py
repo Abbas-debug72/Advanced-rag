@@ -1,87 +1,90 @@
-# memory.py – Vercel-Compatible (uses /tmp/)
+# memory.py – Supabase-backed conversation memory
 import json
 import os
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import datetime
-from collections import OrderedDict
-
+from supabase import Client
 
 class ConversationMemory:
-    """Persistent conversation storage – Vercel compatible."""
-
-    def __init__(self, storage_dir="/tmp/conversations", max_sessions=100):
-        self.storage_dir = storage_dir
-        self.max_sessions = max_sessions
-        self.memory_file = os.path.join(storage_dir, "conversations.json")
-
-        os.makedirs(storage_dir, exist_ok=True)
-        self.conversations = self._load()
-
-    def _load(self) -> OrderedDict:
-        if os.path.exists(self.memory_file):
-            try:
-                with open(self.memory_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                return OrderedDict(data)
-            except:
-                pass
-        return OrderedDict()
-
-    def _save(self):
-        os.makedirs(self.storage_dir, exist_ok=True)
-        with open(self.memory_file, 'w', encoding='utf-8') as f:
-            json.dump(dict(self.conversations), f, indent=2, default=str)
-
-    def add_message(self, session_id: str, role: str, content: str):
-        if session_id not in self.conversations:
-            self.conversations[session_id] = {
-                "messages": [],
-                "created_at": datetime.now().isoformat(),
+    """
+    Manages conversation history stored in Supabase.
+    Each user can have multiple sessions (identified by session_id).
+    """
+    
+    def __init__(self, user_id: str, supabase_admin: Client, table_name: str = "conversations"):
+        self.user_id = user_id
+        self.supabase = supabase_admin
+        self.table_name = table_name
+    
+    def add_message(self, session_id: str, role: str, content: str) -> bool:
+        """Insert a new message into the conversation."""
+        try:
+            data = {
+                "user_id": self.user_id,
+                "session_id": session_id,
+                "role": role,
+                "content": content,
+                "created_at": datetime.now().isoformat()
             }
-
-        self.conversations[session_id]["messages"].append({
-            "role": role,
-            "content": content,
-            "timestamp": datetime.now().isoformat()
-        })
-
-        self.conversations[session_id]["last_updated"] = datetime.now().isoformat()
-
-        while len(self.conversations) > self.max_sessions:
-            self.conversations.popitem(last=False)
-
-        self._save()
-
+            self.supabase.table(self.table_name).insert(data).execute()
+            return True
+        except Exception as e:
+            print(f"Error saving message: {e}")
+            return False
+    
     def get_history(self, session_id: str, last_n: int = 5) -> List[Dict]:
-        if session_id not in self.conversations:
+        """Retrieve the most recent messages for a session."""
+        try:
+            result = self.supabase.table(self.table_name) \
+                .select("*") \
+                .eq("user_id", self.user_id) \
+                .eq("session_id", session_id) \
+                .order("created_at", desc=True) \
+                .limit(last_n) \
+                .execute()
+            # Return in chronological order (oldest first)
+            messages = result.data
+            messages.reverse()
+            return messages
+        except Exception as e:
+            print(f"Error fetching history: {e}")
             return []
-
-        messages = self.conversations[session_id]["messages"]
-        return messages[-last_n:]
-
+    
     def format_history(self, session_id: str, last_n: int = 5) -> str:
+        """Format history as a string for the prompt."""
         history = self.get_history(session_id, last_n)
-
         if not history:
-            return "No previous conversation"
-
-        formatted = []
+            return "No previous conversation."
+        lines = []
         for msg in history:
             role = "User" if msg["role"] == "user" else "Assistant"
-            formatted.append(f"{role}: {msg['content']}")
-
-        return "\n".join(formatted)
-
-    def clear_session(self, session_id: str):
-        if session_id in self.conversations:
-            del self.conversations[session_id]
-            self._save()
-
-    def get_session_count(self) -> int:
-        return len(self.conversations)
-
-    def get_total_messages(self) -> int:
-        return sum(
-            len(session["messages"])
-            for session in self.conversations.values()
-        )
+            lines.append(f"{role}: {msg['content']}")
+        return "\n".join(lines)
+    
+    def clear_session(self, session_id: str) -> bool:
+        """Delete all messages for a given session."""
+        try:
+            self.supabase.table(self.table_name) \
+                .delete() \
+                .eq("user_id", self.user_id) \
+                .eq("session_id", session_id) \
+                .execute()
+            return True
+        except Exception as e:
+            print(f"Error clearing session: {e}")
+            return False
+    
+    def get_all_sessions(self) -> List[str]:
+        """Return a list of distinct session IDs for this user."""
+        try:
+            result = self.supabase.table(self.table_name) \
+                .select("session_id") \
+                .eq("user_id", self.user_id) \
+                .execute()
+            sessions = set()
+            for row in result.data:
+                sessions.add(row["session_id"])
+            return list(sessions)
+        except Exception as e:
+            print(f"Error listing sessions: {e}")
+            return []

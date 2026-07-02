@@ -1,4 +1,4 @@
-# app.py – RAG Chatbot with Fixed API Key Authentication
+# app.py – RAG Chatbot with Supabase Auth, API Keys, Persistent History, and Enhanced Widget
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -27,7 +27,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 print("=" * 60, flush=True)
-print("🚀 STARTING RAG CHATBOT (FIXED AUTH)", flush=True)
+print("🚀 STARTING RAG CHATBOT (with Persistent History & Enhanced Widget)", flush=True)
 print("=" * 60, flush=True)
 
 app = Flask(__name__)
@@ -69,22 +69,19 @@ def get_token_from_request():
     return None
 
 def get_api_key_from_request():
-    # Check all possible header names (case variations)
     key = (request.headers.get('X-API-Key') or
            request.headers.get('X-Api-Key') or
            request.headers.get('x-api-key'))
-    print(f"🔑 Raw headers: {dict(request.headers)}", flush=True)
     print(f"🔑 Extracted API key: {key}", flush=True)
     return key
 
-# ===== AUTH DECORATOR (FIXED) =====
+# ===== AUTH DECORATOR =====
 def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if request.method == "OPTIONS":
             return jsonify({"status": "ok"}), 200
 
-        # 1. Try JWT / cookie
         token = get_token_from_request()
         if token:
             try:
@@ -96,21 +93,12 @@ def require_auth(f):
             except Exception as e:
                 print(f"JWT error: {e}", flush=True)
 
-        # 2. Try API key (exact same logic as /api/test-key)
         api_key = get_api_key_from_request()
-        print(f"🔑 API Key received: {api_key}", flush=True)
-
         if api_key:
             try:
-                print("🔍 Querying users table...", flush=True)
                 result = supabase_admin.table('users').select('*').eq('api_key', api_key).execute()
-                print(f"🔍 Query result: {result.data}", flush=True)
-
                 if result.data and len(result.data) > 0:
                     user_data = result.data[0]
-                    print(f"👤 Found user: {user_data['email']}", flush=True)
-                    # Attach user data directly to request (no need to fetch from auth.admin)
-                    # This mimics what the test-key endpoint does
                     request.user = type('User', (), {
                         'id': user_data['id'],
                         'email': user_data['email'],
@@ -119,7 +107,7 @@ def require_auth(f):
                         'aud': 'authenticated',
                         'created_at': user_data['created_at']
                     })()
-                    print("✅ Authentication successful with API key", flush=True)
+                    print("✅ Authenticated via API key", flush=True)
                     return f(*args, **kwargs)
                 else:
                     print("❌ No user found with that API key", flush=True)
@@ -127,7 +115,7 @@ def require_auth(f):
                 print(f"❌ API key lookup error: {e}", flush=True)
                 traceback.print_exc()
         else:
-            print("❌ No API key provided in headers", flush=True)
+            print("❌ No API key provided", flush=True)
 
         print("❌ Authentication failed – returning 401", flush=True)
         return jsonify({"error": "Missing or invalid authentication"}), 401
@@ -161,7 +149,6 @@ print("🔗 Connecting to Groq...", flush=True)
 groq_client = Groq(api_key=GROQ_API_KEY)
 print(f"✅ Groq ready (model: {GROQ_MODEL})", flush=True)
 
-memory = ConversationMemory()
 session_focus = {}
 
 # ===== LOAD METADATA =====
@@ -238,7 +225,6 @@ def ensure_user_has_api_key(user_id, email):
         return None
 
 # ===== DEBUG ENDPOINTS =====
-
 @app.route('/api/debug-headers', methods=['GET'])
 def debug_headers():
     return jsonify(dict(request.headers))
@@ -259,7 +245,6 @@ def test_key():
         return jsonify({"error": str(e)}), 500
 
 # ===== AUTH ROUTES =====
-
 @app.route('/login')
 def login_page():
     token = request.cookies.get('chatbot_token')
@@ -387,7 +372,7 @@ def get_api_key():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ===== DASHBOARD (passes API key to template) =====
+# ===== DASHBOARD =====
 @app.route('/dashboard')
 @require_auth
 def dashboard():
@@ -401,11 +386,11 @@ def dashboard():
         print(f"Error fetching API key: {e}", flush=True)
     return render_template("dashboard.html", user=request.user, api_key=api_key)
 
-# ===== WIDGET ROUTE (public) =====
+# ===== WIDGET ROUTE (public) with enhanced frontend =====
 @app.route('/widget.js')
 def serve_widget():
     widget_code = """
-// Chat Widget – with API Key authentication
+// Chat Widget – with persistent history and multiple sessions
 (function() {
     'use strict';
 
@@ -420,7 +405,10 @@ def serve_widget():
     };
 
     console.log('🧠 Chat widget loaded');
+
     let sessionId = localStorage.getItem('chatbot_session') || 'session_' + Date.now();
+    localStorage.setItem('chatbot_session', sessionId);
+
     let isOpen = false;
     let isLoading = false;
 
@@ -428,6 +416,7 @@ def serve_widget():
         return CONFIG.apiKey && CONFIG.apiKey.length > 0;
     }
 
+    // ── Build widget DOM ──
     function createWidget() {
         const widget = document.createElement('div');
         widget.id = 'chatbot-widget';
@@ -459,8 +448,10 @@ def serve_widget():
                 #chatbot-widget .chatbot-window.open { display: flex; }
                 #chatbot-widget .chatbot-header {
                     background: ${CONFIG.primaryColor}; color: #fff;
-                    padding: 18px 20px; display: flex; align-items: center; gap: 12px;
-                    flex-shrink: 0; border-bottom: 1px solid rgba(255,255,255,0.1);
+                    padding: 12px 20px;
+                    display: flex; align-items: center; gap: 12px;
+                    flex-shrink: 0;
+                    border-bottom: 1px solid rgba(255,255,255,0.1);
                 }
                 #chatbot-widget .chatbot-header .bot-icon { font-size: 24px; }
                 #chatbot-widget .chatbot-header .bot-name { font-size: 16px; font-weight: 600; flex: 1; }
@@ -479,18 +470,23 @@ def serve_widget():
                 }
                 #chatbot-widget .chatbot-messages::-webkit-scrollbar { width: 4px; }
                 #chatbot-widget .chatbot-messages::-webkit-scrollbar-thumb { background: #d0d5e0; border-radius: 4px; }
-                #chatbot-widget .chatbot-message { display: flex; gap: 10px; max-width: 85%; animation: fadeIn 0.25s ease; }
+                #chatbot-widget .chatbot-message {
+                    display: flex; gap: 10px; max-width: 85%;
+                    animation: fadeIn 0.25s ease;
+                }
                 @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
                 #chatbot-widget .chatbot-message.user { align-self: flex-end; flex-direction: row-reverse; }
                 #chatbot-widget .chatbot-message .avatar {
                     width: 32px; height: 32px; border-radius: 50%;
-                    flex-shrink: 0; display: flex; align-items: center; justify-content: center;
-                    font-size: 16px; background: ${CONFIG.primaryColor}; color: #fff;
+                    flex-shrink: 0;
+                    display: flex; align-items: center; justify-content: center;
+                    font-size: 16px;
+                    background: ${CONFIG.primaryColor}; color: #fff;
                 }
                 #chatbot-widget .chatbot-message.user .avatar { background: ${CONFIG.secondaryColor}; }
                 #chatbot-widget .chatbot-message .bubble {
                     padding: 12px 16px; border-radius: 16px;
-                    font-size: 14px; line-height: 1.6; word-break: break-word;
+                    font-size: 14px; line-height: 1.6;
                     background: #fff; color: #1e1e2f; box-shadow: 0 2px 8px rgba(0,0,0,0.04);
                 }
                 #chatbot-widget .chatbot-message.bot .bubble { border-bottom-left-radius: 4px; }
@@ -521,14 +517,29 @@ def serve_widget():
                     #chatbot-widget .chatbot-window { bottom:0; right:0; width:100%; height:100%; max-height:100vh; border-radius:0; }
                     #chatbot-widget .chatbot-button { bottom:16px; right:16px; width:56px; height:56px; font-size:24px; }
                 }
+                /* New chat button in header */
+                #chatbot-widget .new-chat-btn {
+                    background: rgba(255,255,255,0.2);
+                    border: none;
+                    color: #fff;
+                    padding: 4px 12px;
+                    border-radius: 12px;
+                    font-size: 12px;
+                    cursor: pointer;
+                    margin-left: 8px;
+                }
+                #chatbot-widget .new-chat-btn:hover {
+                    background: rgba(255,255,255,0.35);
+                }
             </style>
             <button class="chatbot-button" id="chatbot-toggle">${CONFIG.botAvatar}</button>
             <div class="chatbot-window" id="chatbot-window">
                 <div class="chatbot-header">
                     <span class="bot-icon">${CONFIG.botAvatar}</span>
                     <span class="bot-name">${CONFIG.botName}</span>
+                    <button class="new-chat-btn" id="new-chat-btn">+ New Chat</button>
                     <div class="header-actions">
-                        <button class="header-btn" id="chatbot-clear" title="Clear chat">↻</button>
+                        <button class="header-btn" id="chatbot-clear" title="Clear current chat">🗑</button>
                         <button class="header-btn" id="chatbot-close" title="Close">✕</button>
                     </div>
                 </div>
@@ -559,17 +570,54 @@ def serve_widget():
         } else {
             document.getElementById('chatbot-input').disabled = false;
             document.getElementById('chatbot-send').disabled = false;
+            // Load history
+            loadHistory();
         }
 
+        // ── Event listeners ──
         document.getElementById('chatbot-toggle').addEventListener('click', toggleChat);
         document.getElementById('chatbot-close').addEventListener('click', closeChat);
-        document.getElementById('chatbot-clear').addEventListener('click', clearChat);
+        document.getElementById('chatbot-clear').addEventListener('click', clearCurrentChat);
+        document.getElementById('new-chat-btn').addEventListener('click', newChat);
         document.getElementById('chatbot-send').addEventListener('click', sendMessage);
         document.getElementById('chatbot-input').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') sendMessage();
         });
     }
 
+    // ── Load history ──
+    async function loadHistory() {
+        if (!hasApiKey()) return;
+        try {
+            const res = await fetch(`${CONFIG.apiUrl}/api/history?session_id=${sessionId}&last_n=20`, {
+                headers: { 'X-API-Key': CONFIG.apiKey }
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            const container = document.getElementById('chatbot-messages');
+            // Clear only the greeting message, keep it as first if history empty
+            // We'll remove all bot messages and re-add
+            const msgs = container.querySelectorAll('.chatbot-message');
+            // Keep only the first greeting if history is empty? We'll rebuild.
+            // For simplicity, we clear and add greeting + history
+            container.innerHTML = '';
+            if (data.history && data.history.length > 0) {
+                data.history.forEach(msg => {
+                    const role = msg.role;
+                    const content = msg.content;
+                    addMessage(content, role, []);
+                });
+            } else {
+                // No history, show greeting
+                addMessage(CONFIG.greeting, 'bot', []);
+            }
+            container.scrollTop = container.scrollHeight;
+        } catch (e) {
+            console.warn('Could not load history:', e);
+        }
+    }
+
+    // ── Toggle chat ──
     function toggleChat() {
         if (!hasApiKey()) {
             alert('Please set window.CHATBOT_API_KEY to use the widget.');
@@ -582,6 +630,8 @@ def serve_widget():
             win.classList.add('open');
             btn.classList.add('hidden');
             setTimeout(() => document.getElementById('chatbot-input').focus(), 200);
+            // Refresh history when opening
+            loadHistory();
         } else {
             win.classList.remove('open');
             btn.classList.remove('hidden');
@@ -594,23 +644,36 @@ def serve_widget():
         document.getElementById('chatbot-toggle').classList.remove('hidden');
     }
 
-    async function clearChat() {
+    // ── New Chat ──
+    async function newChat() {
+        // Generate new session_id
+        sessionId = 'session_' + Date.now();
+        localStorage.setItem('chatbot_session', sessionId);
+        // Clear server-side history for this new session (optional – we can keep it empty)
+        // The user may want to start fresh – we can just clear the UI and reset.
+        const container = document.getElementById('chatbot-messages');
+        container.innerHTML = '';
+        addMessage(CONFIG.greeting, 'bot', []);
+        // Focus input
+        document.getElementById('chatbot-input').focus();
+    }
+
+    // ── Clear current chat ──
+    async function clearCurrentChat() {
+        if (!sessionId) return;
         try {
             await fetch(`${CONFIG.apiUrl}/api/conversation/${sessionId}`, {
                 method: 'DELETE',
                 headers: { 'X-API-Key': CONFIG.apiKey }
             });
         } catch(e) {}
-        sessionId = 'session_' + Date.now();
-        localStorage.setItem('chatbot_session', sessionId);
-        document.getElementById('chatbot-messages').innerHTML = `
-            <div class="chatbot-message bot">
-                <div class="avatar">${CONFIG.botAvatar}</div>
-                <div class="bubble">Chat cleared. Ask me anything!</div>
-            </div>
-        `;
+        // Clear UI
+        const container = document.getElementById('chatbot-messages');
+        container.innerHTML = '';
+        addMessage('Chat cleared. Start a new conversation.', 'bot', []);
     }
 
+    // ── Add message ──
     function addMessage(text, role, sources = []) {
         const container = document.getElementById('chatbot-messages');
         const div = document.createElement('div');
@@ -635,6 +698,7 @@ def serve_widget():
         container.scrollTop = container.scrollHeight;
     }
 
+    // ── Typing indicator ──
     function showTyping() {
         const container = document.getElementById('chatbot-messages');
         const div = document.createElement('div');
@@ -653,6 +717,7 @@ def serve_widget():
         if (el) el.remove();
     }
 
+    // ── Send message ──
     async function sendMessage() {
         const input = document.getElementById('chatbot-input');
         const question = input.value.trim();
@@ -663,7 +728,7 @@ def serve_widget():
         }
 
         isLoading = true;
-        addMessage(question, 'user');
+        addMessage(question, 'user', []);
         input.value = '';
         showTyping();
 
@@ -702,6 +767,7 @@ def serve_widget():
         isLoading = false;
     }
 
+    // ── Initialize ──
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', createWidget);
     } else {
@@ -724,25 +790,26 @@ def index():
             pass
     return redirect('/login')
 
-# ===== PROTECTED CHAT API (with debug prints) =====
+# ===== PROTECTED CHAT API =====
 @app.route("/api/chat", methods=["POST", "OPTIONS"])
 @require_auth
 def chat():
     if request.method == "OPTIONS":
         return jsonify({"status": "ok"}), 200
 
-    print("📨 Entered chat function", flush=True)
     try:
         data = request.get_json()
         if not data or 'question' not in data:
             return jsonify({"answer": "⚠️ Please provide a question."}), 400
 
         question = data['question'].strip()
-        session_id = data.get('session_id', session.get('session_id', 'default'))
+        session_id = data.get('session_id', 'default')
         if not question:
             return jsonify({"answer": "⚠️ Empty question."}), 400
 
-        # Focus commands
+        memory = ConversationMemory(request.user.id, supabase_admin)
+        history_str = memory.format_history(session_id, last_n=6)
+
         focus_cmd = detect_focus_command(question)
         if focus_cmd == "CLEAR":
             session_focus.pop(session_id, None)
@@ -761,7 +828,6 @@ def chat():
             memory.add_message(session_id, "assistant", msg)
             return jsonify({"answer": msg, "sources": []})
 
-        # Search Pinecone
         matches = search_pinecone(question, top_k=15)
         if not matches:
             return jsonify({"answer": "I could not find any matching chunks.", "sources": []})
@@ -790,6 +856,31 @@ def chat():
         print(f"Chat error: {e}", flush=True)
         traceback.print_exc()
         return jsonify({"answer": f"⚠️ Server error: {str(e)[:100]}"}), 500
+
+# ===== HISTORY & SESSIONS =====
+@app.route("/api/history", methods=["GET"])
+@require_auth
+def get_history():
+    session_id = request.args.get('session_id', 'default')
+    last_n = int(request.args.get('last_n', 10))
+    memory = ConversationMemory(request.user.id, supabase_admin)
+    history = memory.get_history(session_id, last_n)
+    return jsonify({"history": history, "count": len(history)})
+
+@app.route("/api/sessions", methods=["GET"])
+@require_auth
+def get_sessions():
+    memory = ConversationMemory(request.user.id, supabase_admin)
+    sessions = memory.get_all_sessions()
+    return jsonify({"sessions": sessions})
+
+@app.route("/api/conversation/<session_id>", methods=["DELETE"])
+@require_auth
+def clear_conversation(session_id):
+    memory = ConversationMemory(request.user.id, supabase_admin)
+    memory.clear_session(session_id)
+    session_focus.pop(session_id, None)
+    return jsonify({"success": True})
 
 # ===== OTHER PROTECTED ENDPOINTS =====
 @app.route("/api/stats")
@@ -824,13 +915,6 @@ def categories():
     for meta in documents_metadata.values():
         cats.add(meta.get("category", "general"))
     return jsonify({"categories": sorted(list(cats))})
-
-@app.route("/api/conversation/<session_id>", methods=["DELETE"])
-@require_auth
-def clear_conversation(session_id):
-    memory.clear_session(session_id)
-    session_focus.pop(session_id, None)
-    return jsonify({"success": True})
 
 @app.route("/api/debug")
 @require_auth
