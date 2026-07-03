@@ -17,9 +17,20 @@ def call_groq(prompt: str, max_tokens: int = 50, temperature: float = 0.0) -> st
     return response.choices[0].message.content.strip()
 
 def decide_retrieval(question: str) -> bool:
-    prompt = f"""Question: {question}
-Do you need to look up external documents to answer this reliably?
-Reply with exactly 'yes' or 'no' (only one word)."""
+    prompt = f"""You are a router for a knowledge‑based AI.
+
+Question: "{question}"
+
+Should we search the company's internal PDF documents to answer this question?
+Reply with exactly 'yes' or 'no'.
+
+Rules:
+- Answer 'yes' if the question asks for any specific fact, name, date, number, definition, concept, or reference that might be in the documents.
+- Answer 'yes' if the question mentions any book, author, or specific topic that could be covered in the documents.
+- Answer 'yes' unless the question is pure chit‑chat, casual greeting, or a general opinion.
+- When in doubt, answer 'yes' – it is safer to retrieve than to miss information.
+
+Now respond with only 'yes' or 'no':"""
     ans = call_groq(prompt, max_tokens=5).lower()
     return ans.startswith('y')
 
@@ -29,6 +40,10 @@ def filter_relevant_batch(question: str, docs: List[Dict]) -> List[int]:
     doc_texts = []
     for i, doc in enumerate(docs):
         text = doc.get('metadata', {}).get('text', '')[:2000]
+        if not text:
+            text = doc.get('metadata', {}).get('chunk_text', '')[:2000]
+        if not text:
+            text = doc.get('metadata', {}).get('content', '')[:2000]
         doc_texts.append(f"[{i}] {text[:500]}...")
     combined = "\n".join(doc_texts)
     prompt = f"""Question: {question}
@@ -45,10 +60,12 @@ Only return the list, nothing else."""
         indices = [int(n) for n in numbers if int(n) < len(docs)]
         return indices
     except:
-        return []
+        # Fallback: return top 3
+        return list(range(min(3, len(docs))))
 
 def generate_from_context(question: str, context: str) -> str:
     prompt = f"""You are a helpful assistant. Answer the user's question based solely on the provided context.
+If the context does not contain enough information, say "I don't have enough information in the provided documents."
 
 Context:
 {context}
