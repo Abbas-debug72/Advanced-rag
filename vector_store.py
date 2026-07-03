@@ -2,6 +2,7 @@ from pinecone import Pinecone
 from config import get_settings
 from sentence_transformers import SentenceTransformer
 from typing import List, Dict, Optional
+import json
 
 settings = get_settings()
 pc = Pinecone(api_key=settings.PINECONE_API_KEY)
@@ -24,12 +25,10 @@ def search_pinecone(query: str, top_k: int = 10, filter_: Optional[Dict] = None)
     return results.get('matches', [])
 
 def get_document_metadata():
-    # Load from brain_metadata.json
-    import json
     with open("brain_metadata.json", "r") as f:
         return json.load(f)
 
 documents_metadata = get_document_metadata()
 
-def get_all_filenames():
+def get_all_filenames() -> List[str]:
     return list(documents_metadata.keys())

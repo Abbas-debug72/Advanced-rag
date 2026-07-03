@@ -12,5 +12,5 @@ class ChatResponse(BaseModel):
 
 class FeedbackRequest(BaseModel):
     session_id: str
-    rating: int  # 1 for up, -1 for down
+    rating: int
     corrected_answer: Optional[str] = None

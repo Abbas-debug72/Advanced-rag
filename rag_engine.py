@@ -36,10 +36,9 @@ class SelfRAGEngine:
         # 2. Retrieval loop (with possible query rewriting)
         retrieval_query = question
         rewrite_tries = 0
-        max_rewrite = 1  # we only allow one rewrite
+        max_rewrite = 1
 
         while rewrite_tries <= max_rewrite:
-            # Apply focus filter if any
             filter_ = {"source_file": focus_doc} if focus_doc else {}
             docs = search_pinecone(retrieval_query, top_k=10, filter_=filter_)
             if not docs:
@@ -50,7 +49,6 @@ class SelfRAGEngine:
                 else:
                     return RAGResult("No documents found.", [], True, 'no', False, 0, rewrite_tries)
 
-            # 3. Batch relevance filter (one call for all docs)
             relevant_indices = filter_relevant_batch(question, docs)
             if not relevant_indices:
                 if rewrite_tries < max_rewrite:
@@ -60,29 +58,23 @@ class SelfRAGEngine:
                 else:
                     return RAGResult("No relevant documents found.", [], True, 'no', False, 0, rewrite_tries)
 
-            relevant_docs = [docs[i] for i in relevant_indices[:5]]  # cap
+            relevant_docs = [docs[i] for i in relevant_indices[:5]]
             context = "\n---\n".join([d['metadata'].get('text', '') for d in relevant_docs])
 
-            # 4. Generate answer from context
             answer = generate_from_context(question, context)
-
-            # 5. Combined support & usefulness check
             support_verdict, useful = check_support_and_usefulness(question, answer, context)
 
-            # 6. If not fully supported, try to revise (once)
             revision_retries = 0
             if support_verdict != 'full':
                 answer = revise_answer(question, answer, context)
                 support_verdict, useful = check_support_and_usefulness(question, answer, context)
                 revision_retries = 1
 
-            # If still not useful and we have rewrite budget left, rewrite and retry
             if not useful and rewrite_tries < max_rewrite:
                 retrieval_query = rewrite_query(question, retrieval_query, answer)
                 rewrite_tries += 1
                 continue
             else:
-                # Final answer (even if not useful)
                 sources = [{'document': d['metadata'].get('source_file', 'unknown'), 'score': d.get('score', 0)}
                            for d in relevant_docs]
                 return RAGResult(
@@ -95,5 +87,4 @@ class SelfRAGEngine:
                     rewrite_tries=rewrite_tries
                 )
 
-        # fallback
         return RAGResult("I couldn't find a useful answer.", [], True, 'no', False, 0, rewrite_tries)

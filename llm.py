@@ -1,5 +1,6 @@
 from groq import Groq
 from config import get_settings
+from typing import List, Dict
 import re
 
 settings = get_settings()
@@ -23,16 +24,12 @@ Reply with exactly 'yes' or 'no' (only one word)."""
     return ans.startswith('y')
 
 def filter_relevant_batch(question: str, docs: List[Dict]) -> List[int]:
-    """
-    Return indices of docs that are relevant.
-    """
     if not docs:
         return []
-    # Build a short representation of each doc
     doc_texts = []
     for i, doc in enumerate(docs):
         text = doc.get('metadata', {}).get('text', '')[:2000]
-        doc_texts.append(f"[{i}] {text[:500]}...")  # truncate to save tokens
+        doc_texts.append(f"[{i}] {text[:500]}...")
     combined = "\n".join(doc_texts)
     prompt = f"""Question: {question}
 
@@ -43,9 +40,7 @@ Which documents contain information useful for answering the question?
 Reply with a list of indices, e.g., [0, 2, 5] or [] if none.
 Only return the list, nothing else."""
     resp = call_groq(prompt, max_tokens=100)
-    # Parse list of ints
     try:
-        # find all numbers in brackets or just numbers
         numbers = re.findall(r'\d+', resp)
         indices = [int(n) for n in numbers if int(n) < len(docs)]
         return indices
@@ -63,11 +58,6 @@ Answer:"""
     return call_groq(prompt, max_tokens=500, temperature=0.3)
 
 def check_support_and_usefulness(question: str, answer: str, context: str) -> tuple:
-    """
-    Returns (support_verdict, useful, evidence_list)
-    support_verdict: 'full', 'partial', 'no'
-    useful: True/False
-    """
     prompt = f"""You are a strict evaluator.
 Question: {question}
 Answer: {answer}
