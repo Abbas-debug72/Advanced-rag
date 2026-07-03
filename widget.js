@@ -1,4 +1,4 @@
-// widget.js – Full chat widget with session switcher, API key auth, and history
+// widget.js – Full chat widget with feedback
 (function() {
     'use strict';
 
@@ -144,6 +144,50 @@
                     transition: background 0.2s; white-space: nowrap;
                 }
                 #chatbot-widget .chatbot-input-area button:hover { background: #5a52d5; }
+                #chatbot-widget .feedback-area {
+                    margin-top: 6px;
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    flex-wrap: wrap;
+                }
+                #chatbot-widget .feedback-btn {
+                    background: transparent;
+                    border: none;
+                    cursor: pointer;
+                    font-size: 16px;
+                    padding: 2px 4px;
+                    border-radius: 4px;
+                    transition: background 0.2s;
+                }
+                #chatbot-widget .feedback-btn:hover { background: #eef0f4; }
+                #chatbot-widget .feedback-btn.active-up { color: #4ade80; }
+                #chatbot-widget .feedback-btn.active-down { color: #f87171; }
+                #chatbot-widget .feedback-correction {
+                    display: none;
+                    margin-top: 4px;
+                    width: 100%;
+                }
+                #chatbot-widget .feedback-correction input {
+                    width: 100%;
+                    padding: 4px 8px;
+                    border: 1px solid #d0d5e0;
+                    border-radius: 12px;
+                    font-size: 12px;
+                    outline: none;
+                }
+                #chatbot-widget .feedback-correction input:focus { border-color: ${CONFIG.primaryColor}; }
+                #chatbot-widget .feedback-correction .submit-correction {
+                    margin-top: 4px;
+                    padding: 2px 10px;
+                    background: ${CONFIG.primaryColor};
+                    color: #fff;
+                    border: none;
+                    border-radius: 12px;
+                    font-size: 11px;
+                    cursor: pointer;
+                }
+                #chatbot-widget .feedback-correction .submit-correction:hover { background: #5a52d5; }
                 @media (max-width:500px) {
                     #chatbot-widget .chatbot-window { bottom:0; right:0; width:100%; height:100%; max-height:100vh; border-radius:0; }
                     #chatbot-widget .chatbot-button { bottom:16px; right:16px; width:56px; height:56px; font-size:24px; }
@@ -195,7 +239,6 @@
         } else {
             document.getElementById('chatbot-input').disabled = false;
             document.getElementById('chatbot-send').disabled = false;
-            // Load sessions and history
             loadSessions();
         }
 
@@ -222,13 +265,10 @@
             const data = await res.json();
             allSessions = data.sessions || [];
             populateSessionDropdown();
-            // If current session is not in the list, add it (but it may not have history yet)
             if (!allSessions.includes(sessionId)) {
                 allSessions.push(sessionId);
             }
-            // Select current session in dropdown
             document.getElementById('session-select').value = sessionId;
-            // Load history for current session
             loadHistory(sessionId);
         } catch (e) {
             console.warn('Could not load sessions:', e);
@@ -238,12 +278,9 @@
     function populateSessionDropdown() {
         const select = document.getElementById('session-select');
         select.innerHTML = '';
-        // Show sessions in reverse chronological order (newest first) – we sort by timestamp if available
-        // For simplicity, we just display them as is.
         allSessions.forEach(sid => {
             const option = document.createElement('option');
             option.value = sid;
-            // Display a shortened label
             const label = sid.replace('session_', 'Chat ');
             option.textContent = label.length > 15 ? label.slice(0, 12) + '…' : label;
             select.appendChild(option);
@@ -279,11 +316,10 @@
             container.innerHTML = '';
             if (data.history && data.history.length > 0) {
                 data.history.forEach(msg => {
-                    addMessage(msg.content, msg.role, []);
+                    addMessage(msg.content, msg.role, [], null);
                 });
             } else {
-                // No history, show greeting
-                addMessage(CONFIG.greeting, 'bot', []);
+                addMessage(CONFIG.greeting, 'bot', [], null);
             }
             container.scrollTop = container.scrollHeight;
         } catch (e) {
@@ -304,7 +340,6 @@
             win.classList.add('open');
             btn.classList.add('hidden');
             setTimeout(() => document.getElementById('chatbot-input').focus(), 200);
-            // Refresh sessions and history
             loadSessions();
         } else {
             win.classList.remove('open');
@@ -320,17 +355,14 @@
 
     // ── New Chat ──
     async function newChat() {
-        // Generate new session_id
         sessionId = 'session_' + Date.now();
         localStorage.setItem('chatbot_session', sessionId);
-        // Add to sessions list and dropdown
         allSessions.push(sessionId);
         populateSessionDropdown();
         document.getElementById('session-select').value = sessionId;
-        // Clear UI and show greeting
         const container = document.getElementById('chatbot-messages');
         container.innerHTML = '';
-        addMessage(CONFIG.greeting, 'bot', []);
+        addMessage(CONFIG.greeting, 'bot', [], null);
         document.getElementById('chatbot-input').focus();
     }
 
@@ -343,15 +375,12 @@
                 headers: { 'X-API-Key': CONFIG.apiKey }
             });
         } catch(e) {}
-        // Remove from sessions list
         const index = allSessions.indexOf(sessionId);
         if (index > -1) allSessions.splice(index, 1);
         populateSessionDropdown();
-        // If no sessions left, create a new one
         if (allSessions.length === 0) {
             newChat();
         } else {
-            // Select the first session
             sessionId = allSessions[0];
             localStorage.setItem('chatbot_session', sessionId);
             document.getElementById('session-select').value = sessionId;
@@ -359,8 +388,29 @@
         }
     }
 
-    // ── Add message ──
-    function addMessage(text, role, sources = []) {
+    // ── Feedback submission ──
+    async function submitFeedback(messageId, rating, correctedAnswer) {
+        if (!hasApiKey()) return;
+        try {
+            await fetch(`${CONFIG.apiUrl}/api/feedback`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': CONFIG.apiKey
+                },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    rating: rating,
+                    corrected_answer: correctedAnswer || null
+                })
+            });
+        } catch (e) {
+            console.warn('Feedback submission error:', e);
+        }
+    }
+
+    // ── Add message with feedback ──
+    function addMessage(text, role, sources = [], messageId = null) {
         const container = document.getElementById('chatbot-messages');
         const div = document.createElement('div');
         div.className = `chatbot-message ${role}`;
@@ -378,9 +428,67 @@
             });
             html += `</div>`;
         }
+        // Feedback buttons for bot messages
+        if (role === 'bot' && messageId !== null) {
+            html += `<div class="feedback-area" data-message-id="${messageId}">
+                        <button class="feedback-btn up-btn" title="Helpful">👍</button>
+                        <button class="feedback-btn down-btn" title="Not helpful">👎</button>
+                        <div class="feedback-correction">
+                            <input type="text" placeholder="What would be the correct answer?" />
+                            <button class="submit-correction">Submit</button>
+                        </div>
+                    </div>`;
+        }
         html += `</div>`;
         div.innerHTML = html;
         container.appendChild(div);
+
+        // Attach feedback events (only for bot messages)
+        if (role === 'bot' && messageId !== null) {
+            const area = div.querySelector('.feedback-area');
+            if (area) {
+                const upBtn = area.querySelector('.up-btn');
+                const downBtn = area.querySelector('.down-btn');
+                const correctionDiv = area.querySelector('.feedback-correction');
+                const correctionInput = correctionDiv.querySelector('input');
+                const submitBtn = correctionDiv.querySelector('.submit-correction');
+
+                let feedbackSent = false;
+
+                upBtn.addEventListener('click', () => {
+                    if (feedbackSent) return;
+                    feedbackSent = true;
+                    upBtn.classList.add('active-up');
+                    submitFeedback(messageId, 1);
+                });
+
+                downBtn.addEventListener('click', () => {
+                    if (feedbackSent) return;
+                    feedbackSent = true;
+                    downBtn.classList.add('active-down');
+                    correctionDiv.style.display = 'block';
+                    correctionInput.focus();
+                });
+
+                submitBtn.addEventListener('click', () => {
+                    const corrected = correctionInput.value.trim();
+                    if (corrected) {
+                        submitFeedback(messageId, -1, corrected);
+                    } else {
+                        submitFeedback(messageId, -1);
+                    }
+                    correctionDiv.style.display = 'none';
+                    downBtn.classList.add('active-down');
+                });
+
+                correctionInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        submitBtn.click();
+                    }
+                });
+            }
+        }
+
         container.scrollTop = container.scrollHeight;
     }
 
@@ -414,7 +522,7 @@
         }
 
         isLoading = true;
-        addMessage(question, 'user', []);
+        addMessage(question, 'user', [], null);
         input.value = '';
         showTyping();
 
@@ -432,7 +540,7 @@
 
             if (res.status === 401) {
                 hideTyping();
-                addMessage('🔐 Invalid API key. Please check your configuration.', 'bot');
+                addMessage('🔐 Invalid API key. Please check your configuration.', 'bot', [], Date.now());
                 document.getElementById('chatbot-input').disabled = true;
                 document.getElementById('chatbot-send').disabled = true;
                 isLoading = false;
@@ -441,14 +549,16 @@
 
             hideTyping();
             if (data.answer) {
-                addMessage(data.answer, 'bot', data.sources || []);
+                // Use a timestamp or a random ID for messageId (we don't have a DB id)
+                const msgId = Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+                addMessage(data.answer, 'bot', data.sources || [], msgId);
             } else {
-                addMessage('⚠️ Could not process your question.', 'bot');
+                addMessage('⚠️ Could not process your question.', 'bot', [], Date.now());
             }
         } catch (e) {
             console.error('Widget error:', e);
             hideTyping();
-            addMessage('⚠️ Network error. Please try again.', 'bot');
+            addMessage('⚠️ Network error. Please try again.', 'bot', [], Date.now());
         }
         isLoading = false;
     }
