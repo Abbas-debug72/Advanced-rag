@@ -2,6 +2,7 @@ from flask import Flask, redirect, url_for, render_template, request, jsonify
 from flask_cors import CORS
 from config import get_settings
 from db import supabase
+from auth import require_auth   # <-- ADD THIS
 import os
 
 # Import blueprints from routes package
@@ -46,7 +47,7 @@ def create_app():
     def signup_page():
         return render_template("signup.html")
 
-    # Debug/status endpoints (can be moved to a separate blueprint)
+    # Debug/status endpoints
     @app.route('/api/stats')
     @require_auth
     def stats():
