@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 from vector_store import search_pinecone, get_all_filenames
 from llm import (
@@ -27,25 +27,23 @@ class SelfRAGEngine:
         self.memory = ConversationMemory(user_id, supabase_admin)
 
     def run(self, question: str, session_id: str, focus_doc: Optional[str] = None) -> RAGResult:
-        # 1. Decide if retrieval is needed (with keyword override)
-        book_keywords = ['book', 'chapter', 'author', 'page', 'according to', 'in the book', 'by ', 'atomic habits', 'coddling', 'network marketing', 'untruths', 'funnels']
-        if any(kw in question.lower() for kw in book_keywords):
-            need_retrieval = True
-        else:
-            need_retrieval = decide_retrieval(question)
+        # 1. Decide if retrieval is needed
+        need_retrieval = decide_retrieval(question)
 
         if not need_retrieval:
             answer = generate_from_context(question, "No context provided, use your general knowledge.")
             return RAGResult(answer, [], False, 'N/A', True, 0, 0)
 
-        # 2. Retrieval loop (with query rewriting)
+        # 2. Retrieval loop (with possible query rewriting)
         retrieval_query = question
         rewrite_tries = 0
         max_rewrite = 1
 
         while rewrite_tries <= max_rewrite:
+            # Apply focus filter if any
             filter_ = {"source_file": focus_doc} if focus_doc else {}
-            docs = search_pinecone(retrieval_query, top_k=10, filter_=filter_)
+            docs = search_pinecone(retrieval_query, top_k=15, filter_=filter_)
+
             if not docs:
                 if rewrite_tries < max_rewrite:
                     retrieval_query = rewrite_query(question, retrieval_query, "")
@@ -54,42 +52,38 @@ class SelfRAGEngine:
                 else:
                     return RAGResult("No documents found in the knowledge base.", [], True, 'no', False, 0, rewrite_tries)
 
-            # 3. Batch relevance filter
+            # 3. Batch relevance filter (allow up to 7 relevant)
             relevant_indices = filter_relevant_batch(question, docs)
             if not relevant_indices:
-                # Fallback: use top 3 docs
-                relevant_indices = list(range(min(3, len(docs))))
+                # Fallback: use top 5 docs
+                relevant_indices = list(range(min(5, len(docs))))
 
-            relevant_docs = [docs[i] for i in relevant_indices[:5]]
+            relevant_docs = [docs[i] for i in relevant_indices[:7]]
 
-            # 4. Build context robustly
+            # 4. Build context from relevant docs
             context_parts = []
             for doc in relevant_docs:
                 meta = doc.get('metadata', {})
-                # Try different possible text keys
-                text = meta.get('text') or meta.get('chunk_text') or meta.get('content')
+                text = meta.get('text') or meta.get('chunk_text') or meta.get('content') or ""
                 if text:
                     context_parts.append(text)
-                else:
-                    # If no text, include metadata as string
-                    context_parts.append(str(meta))
 
-            context = "\n---\n".join(context_parts)
+            context = "\n\n---\n\n".join(context_parts)
 
-            # If context is still empty, use all docs (ignore relevance)
+            # If context is empty, fallback to all docs (top 5)
             if not context:
                 all_texts = []
                 for doc in docs[:5]:
                     meta = doc.get('metadata', {})
-                    text = meta.get('text') or meta.get('chunk_text') or meta.get('content') or str(meta)
-                    all_texts.append(text)
-                context = "\n---\n".join(all_texts)
+                    text = meta.get('text') or meta.get('chunk_text') or meta.get('content') or ""
+                    if text:
+                        all_texts.append(text)
+                context = "\n\n---\n\n".join(all_texts)
 
-            # If context is still empty, give up
             if not context:
                 return RAGResult("I found some documents but couldn't extract readable content.", [], True, 'no', False, 0, rewrite_tries)
 
-            # 5. Generate answer
+            # 5. Generate answer from context
             answer = generate_from_context(question, context)
 
             # 6. Check support & usefulness
@@ -102,12 +96,13 @@ class SelfRAGEngine:
                 support_verdict, useful = check_support_and_usefulness(question, answer, context)
                 revision_retries = 1
 
-            # 8. If not useful, rewrite query and retry (once)
+            # 8. If not useful and we have rewrite budget, retry
             if not useful and rewrite_tries < max_rewrite:
                 retrieval_query = rewrite_query(question, retrieval_query, answer)
                 rewrite_tries += 1
                 continue
             else:
+                # Build sources list
                 sources = [{'document': d.get('metadata', {}).get('source_file', 'unknown'), 'score': d.get('score', 0)}
                            for d in relevant_docs]
                 return RAGResult(
@@ -120,4 +115,5 @@ class SelfRAGEngine:
                     rewrite_tries=rewrite_tries
                 )
 
+        # Final fallback
         return RAGResult("I couldn't find a useful answer after trying.", [], True, 'no', False, 0, rewrite_tries)
