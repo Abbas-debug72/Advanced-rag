@@ -1,9 +1,7 @@
-from flask import Blueprint
+from flask import Blueprint, send_file
 
 widget_bp = Blueprint('widget', __name__)
 
 @widget_bp.route('/widget.js')
 def serve_widget():
-    # Read the static JavaScript file from the project root
-    with open('widget.js', 'r') as f:
-        return f.read(), 200, {'Content-Type': 'application/javascript'}
+    return send_file('widget.js', mimetype='application/javascript')
