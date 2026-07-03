@@ -1,0 +1,53 @@
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info
+dist
+build
+*.whl
+
+# Virtual environments
+venv
+env
+.venv
+.env
+
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Logs and temp
+*.log
+*.tmp
+*.temp
+
+# Local configuration (don't copy .env to container)
+.env
+.env.local
+
+# Data files (if large, but we keep brain_metadata.json)
+# pdfs/   # uncomment if you don't want to copy PDFs at build time
+# conversations/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Misc
+README.md
+*.md
+requirements.txt   # already copied separately, but we keep it anyway
+
+# Ensure we DO NOT ignore widget.js
+# !widget.js   # not needed because we didn't ignore *.js

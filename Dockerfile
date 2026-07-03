@@ -2,26 +2,20 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (needed for some Python packages)
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application files
-COPY app.py .
-COPY brain.py .
-COPY memory.py .
-COPY brain_metadata.json .
-COPY widget.js .
-COPY templates/ ./templates/
-COPY static/ ./static/
+# Copy the entire application (including widget.js, routes/, etc.)
+COPY . .
 
-# Create directories
+# Create necessary directories (if not already present)
 RUN mkdir -p conversations pdfs
 
 ENV PORT=5000
