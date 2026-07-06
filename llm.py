@@ -7,7 +7,7 @@ settings = get_settings()
 groq_client = Groq(api_key=settings.GROQ_API_KEY)
 MODEL = settings.GROQ_MODEL
 
-# --- Simple greetings / chit-chat that never trigger retrieval ---
+# Simple greetings
 GREETINGS = {
     "hi", "hello", "hey", "how are you", "what's up", 
     "good morning", "good evening", "good night", "howdy",
@@ -24,17 +24,38 @@ def call_groq(prompt: str, max_tokens: int = 50, temperature: float = 0.0) -> st
     return response.choices[0].message.content.strip()
 
 def decide_retrieval(question: str) -> bool:
-    """
-    Deterministic decision:
-    - Skip retrieval for exact greetings.
-    - For everything else, force retrieval.
-    """
     q_lower = question.lower().strip()
-    # If the question is exactly a greeting or a common short phrase, skip
     if q_lower in GREETINGS or q_lower in [g + '?' for g in GREETINGS]:
         return False
-    # For any other question, we retrieve (including "what is chatgpt", "what is atomic habbit", etc.)
     return True
+
+def filter_relevant_batch(question: str, docs: List[Dict]) -> List[int]:
+    """LLM-based batch relevance filter with fallback."""
+    if not docs:
+        return []
+    doc_texts = []
+    for i, doc in enumerate(docs):
+        meta = doc.get('metadata', {})
+        text = meta.get('text') or meta.get('chunk_text') or meta.get('content') or ""
+        text = text[:2000]
+        doc_texts.append(f"[{i}] {text[:500]}...")
+    combined = "\n".join(doc_texts)
+    prompt = f"""Question: {question}
+
+Documents:
+{combined}
+
+Which documents contain information useful for answering the question?
+Reply with a list of indices, e.g., [0, 2, 5] or [] if none.
+Only return the list, nothing else."""
+    resp = call_groq(prompt, max_tokens=100)
+    try:
+        numbers = re.findall(r'\d+', resp)
+        indices = [int(n) for n in numbers if int(n) < len(docs)]
+        return indices
+    except:
+        # Fallback: return top 3
+        return list(range(min(3, len(docs))))
 
 def generate_from_context(question: str, context: str) -> str:
     prompt = f"""You are a helpful assistant. Answer the user's question based solely on the provided context.

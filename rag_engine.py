@@ -1,10 +1,10 @@
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 from vector_store import search_pinecone, get_all_filenames
-from rerank import rerank_documents
 from llm import (
     decide_retrieval, generate_from_context,
-    check_support_and_usefulness, revise_answer, rewrite_query
+    check_support_and_usefulness, revise_answer, rewrite_query,
+    filter_relevant_batch
 )
 from memory import ConversationMemory
 from db import supabase_admin
@@ -46,11 +46,9 @@ class SelfRAGEngine:
         need_retrieval = decide_retrieval(question)
 
         if not need_retrieval:
-            # For greetings, we generate a friendly response without context
             answer = generate_from_context(question, "No context provided, use your general knowledge.")
             return RAGResult(answer, [], False, 'N/A', True, 0, 0)
 
-        # Auto-detect focus if a document is mentioned
         mentioned_doc = detect_mentioned_document(question)
         if focus_doc is None and mentioned_doc:
             focus_doc = mentioned_doc
@@ -61,18 +59,21 @@ class SelfRAGEngine:
 
         while rewrite_tries <= max_rewrite:
             filter_ = {"source_file": focus_doc} if focus_doc else {}
-            docs = search_pinecone(retrieval_query, top_k=30, filter_=filter_)
+            docs = search_pinecone(retrieval_query, top_k=20, filter_=filter_)
 
             if not docs:
-                # No documents found – return "I don't have an answer"
                 return RAGResult(
                     "I don't have an answer related to this question.",
                     [], True, 'no', False, 0, rewrite_tries
                 )
 
-            # Rerank and take top 12
-            relevant_indices = rerank_documents(question, docs, top_k=12)
-            relevant_docs = [docs[i] for i in relevant_indices]
+            # Use LLM batch relevance filter instead of reranker
+            relevant_indices = filter_relevant_batch(question, docs)
+            if not relevant_indices:
+                # fallback: top 5
+                relevant_indices = list(range(min(5, len(docs))))
+
+            relevant_docs = [docs[i] for i in relevant_indices[:10]]
 
             # Build context
             context_parts = []
@@ -84,7 +85,6 @@ class SelfRAGEngine:
 
             context = "\n\n---\n\n".join(context_parts)
 
-            # If still empty, use fallback
             if not context:
                 all_texts = []
                 for doc in docs[:7]:
@@ -100,12 +100,10 @@ class SelfRAGEngine:
                     [], True, 'no', False, 0, rewrite_tries
                 )
 
-            # Generate answer from context
             answer = generate_from_context(question, context)
 
             support_verdict, useful = check_support_and_usefulness(question, answer, context)
 
-            # Revision if needed
             revision_retries = 0
             if support_verdict != 'full':
                 answer = revise_answer(question, answer, context)
