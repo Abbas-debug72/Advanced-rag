@@ -32,7 +32,6 @@ def call_groq(prompt: str, max_tokens: int = 500, temperature: float = 0.3) -> s
 def is_greeting(question: str) -> bool:
     """Check if the question is a simple greeting, ignoring punctuation."""
     q = re.sub(r'[^a-zA-Z\s]', '', question).strip().lower()
-    # Also check if the question is very short and contains only a greeting word
     words = q.split()
     if len(words) <= 2 and any(w in GREETINGS for w in words):
         return True
@@ -62,22 +61,20 @@ Answer:"""
 def generate_from_chunks(question: str, chunks_text: str) -> Optional[str]:
     """
     Used by self-learning: given a set of chunks (from all documents),
-    decide if any can answer the question.
-    If yes, answer; else return None.
+    answer the question directly based on the snippets.
+    Return None if not related.
     """
     if not chunks_text:
         return None
-    prompt = f"""You are a content analyst.
-The user asked: "{question}"
+    prompt = f"""You are a helpful assistant.
+Answer the user's question based solely on the provided snippets.
+Be concise and direct. Do not comment on whether the snippets contain information; just answer the question.
+If the snippets do not contain information to answer the question, reply with exactly "NOT_RELATED".
 
-We have the following text snippets from our documents:
-
+Snippets:
 {chunks_text}
 
-Does any of these snippets contain information that can answer the question?
-- If yes, provide a concise answer based only on the snippets.
-- If no, reply with exactly "NOT_RELATED".
-
+Question: {question}
 Answer:"""
     resp = call_groq(prompt, max_tokens=300, temperature=0.2)
     if not resp or "NOT_RELATED" in resp:
