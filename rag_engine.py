@@ -1,15 +1,13 @@
 from typing import List, Dict, Optional
 from dataclasses import dataclass
-from vector_store import search_pinecone, get_all_filenames
+from vector_store import search_pinecone, get_all_filenames, upsert_qa_pair
 from llm import (
-    decide_retrieval, generate_from_context,
-    check_support_and_usefulness, revise_answer, rewrite_query,
-    filter_relevant_batch
+    is_greeting, generate_greeting, generate_from_context,
+    generate_from_chunks
 )
 from memory import ConversationMemory
 from db import supabase_admin
 import logging
-import re
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +16,8 @@ class RAGResult:
     answer: str
     sources: List[Dict]
     retrieval_used: bool
-    support_verdict: str
-    useful: bool
-    retries: int
-    rewrite_tries: int
+    # self-learning metadata (optional)
+    learned: bool = False
 
 def normalize_filename(filename: str) -> str:
     name = filename.rsplit('.', 1)[0]
@@ -43,91 +39,68 @@ class SelfRAGEngine:
         self.memory = ConversationMemory(user_id, supabase_admin)
 
     def run(self, question: str, session_id: str, focus_doc: Optional[str] = None) -> RAGResult:
-        need_retrieval = decide_retrieval(question)
+        # 1. Check greetings
+        if is_greeting(question):
+            return RAGResult(generate_greeting(), [], False)
 
-        if not need_retrieval:
-            answer = generate_from_context(question, "No context provided, use your general knowledge.")
-            return RAGResult(answer, [], False, 'N/A', True, 0, 0)
-
+        # 2. Detect if a specific document is mentioned
         mentioned_doc = detect_mentioned_document(question)
         if focus_doc is None and mentioned_doc:
             focus_doc = mentioned_doc
 
-        retrieval_query = question
-        rewrite_tries = 0
-        max_rewrite = 1
+        # 3. Retrieve from Pinecone
+        filter_ = {"source_file": focus_doc} if focus_doc else {}
+        docs = search_pinecone(question, top_k=10, filter_=filter_)
 
-        while rewrite_tries <= max_rewrite:
-            filter_ = {"source_file": focus_doc} if focus_doc else {}
-            docs = search_pinecone(retrieval_query, top_k=20, filter_=filter_)
-
-            if not docs:
-                return RAGResult(
-                    "I don't have an answer related to this question.",
-                    [], True, 'no', False, 0, rewrite_tries
-                )
-
-            # Use LLM batch relevance filter instead of reranker
-            relevant_indices = filter_relevant_batch(question, docs)
-            if not relevant_indices:
-                # fallback: top 5
-                relevant_indices = list(range(min(5, len(docs))))
-
-            relevant_docs = [docs[i] for i in relevant_indices[:10]]
-
-            # Build context
+        # 4. If we have docs, build context and generate answer
+        if docs:
             context_parts = []
-            for doc in relevant_docs:
+            for doc in docs:
                 meta = doc.get('metadata', {})
                 text = meta.get('text') or meta.get('chunk_text') or meta.get('content') or ""
                 if text:
                     context_parts.append(text)
+            context = "\n\n---\n\n".join(context_parts[:5])
 
-            context = "\n\n---\n\n".join(context_parts)
+            if context:
+                answer = generate_from_context(question, context)
+                sources = [{'document': d['metadata'].get('source_file', 'unknown'), 'score': d.get('score', 0)}
+                           for d in docs[:5]]
+                return RAGResult(answer, sources, True)
 
-            if not context:
-                all_texts = []
-                for doc in docs[:7]:
-                    meta = doc.get('metadata', {})
-                    text = meta.get('text') or meta.get('chunk_text') or meta.get('content') or ""
-                    if text:
-                        all_texts.append(text)
-                context = "\n\n---\n\n".join(all_texts)
+        # 5. No answer found – attempt self‑learning
+        learned_answer = self._self_learn(question)
+        if learned_answer:
+            # Store the new QA pair for future use
+            upsert_qa_pair(question, learned_answer)
+            return RAGResult(learned_answer, [], True, learned=True)
 
-            if not context:
-                return RAGResult(
-                    "I don't have an answer related to this question.",
-                    [], True, 'no', False, 0, rewrite_tries
-                )
+        # 6. Final fallback – no answer
+        return RAGResult("I don't have an answer related to this question.", [], True)
 
-            answer = generate_from_context(question, context)
+    def _self_learn(self, question: str) -> Optional[str]:
+        """
+        Re‑retrieve a broader set of chunks (across all documents),
+        then ask the LLM if any can answer the question.
+        If yes, return the answer; else None.
+        """
+        # Retrieve from all documents (no filter) to get a variety of chunks
+        docs = search_pinecone(question, top_k=10, filter_=None)
+        if not docs:
+            return None
 
-            support_verdict, useful = check_support_and_usefulness(question, answer, context)
+        # Build a text with snippets (shortened to save tokens)
+        snippets = []
+        for i, doc in enumerate(docs[:8]):
+            meta = doc.get('metadata', {})
+            text = meta.get('text') or meta.get('chunk_text') or meta.get('content') or ""
+            if text:
+                # Truncate to 500 chars per chunk
+                snippets.append(f"[Snippet {i+1} from {meta.get('source_file', 'unknown')}]:\n{text[:500]}...")
 
-            revision_retries = 0
-            if support_verdict != 'full':
-                answer = revise_answer(question, answer, context)
-                support_verdict, useful = check_support_and_usefulness(question, answer, context)
-                revision_retries = 1
+        if not snippets:
+            return None
 
-            if not useful and rewrite_tries < max_rewrite:
-                retrieval_query = rewrite_query(question, retrieval_query, answer)
-                rewrite_tries += 1
-                continue
-            else:
-                sources = [{'document': d.get('metadata', {}).get('source_file', 'unknown'), 'score': d.get('score', 0)}
-                           for d in relevant_docs]
-                return RAGResult(
-                    answer=answer,
-                    sources=sources,
-                    retrieval_used=True,
-                    support_verdict=support_verdict,
-                    useful=useful,
-                    retries=revision_retries,
-                    rewrite_tries=rewrite_tries
-                )
-
-        return RAGResult(
-            "I don't have an answer related to this question.",
-            [], True, 'no', False, 0, rewrite_tries
-        )
+        combined = "\n\n".join(snippets)
+        answer = generate_from_chunks(question, combined)
+        return answer

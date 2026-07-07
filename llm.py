@@ -1,20 +1,19 @@
 from groq import Groq
 from config import get_settings
 from typing import List, Dict
-import re
 
 settings = get_settings()
 groq_client = Groq(api_key=settings.GROQ_API_KEY)
 MODEL = settings.GROQ_MODEL
 
-# Simple greetings
+# --- Simple greetings (exact matches) ---
 GREETINGS = {
-    "hi", "hello", "hey", "how are you", "what's up", 
+    "hi", "hello", "hey", "how are you", "what's up",
     "good morning", "good evening", "good night", "howdy",
     "how are you doing", "what's going on", "yo"
 }
 
-def call_groq(prompt: str, max_tokens: int = 50, temperature: float = 0.0) -> str:
+def call_groq(prompt: str, max_tokens: int = 500, temperature: float = 0.3) -> str:
     response = groq_client.chat.completions.create(
         model=MODEL,
         messages=[{"role": "user", "content": prompt}],
@@ -23,39 +22,18 @@ def call_groq(prompt: str, max_tokens: int = 50, temperature: float = 0.0) -> st
     )
     return response.choices[0].message.content.strip()
 
-def decide_retrieval(question: str) -> bool:
-    q_lower = question.lower().strip()
-    if q_lower in GREETINGS or q_lower in [g + '?' for g in GREETINGS]:
-        return False
-    return True
+def is_greeting(question: str) -> bool:
+    q = question.lower().strip()
+    return q in GREETINGS or q.rstrip('?!.') in GREETINGS
 
-def filter_relevant_batch(question: str, docs: List[Dict]) -> List[int]:
-    """LLM-based batch relevance filter with fallback."""
-    if not docs:
-        return []
-    doc_texts = []
-    for i, doc in enumerate(docs):
-        meta = doc.get('metadata', {})
-        text = meta.get('text') or meta.get('chunk_text') or meta.get('content') or ""
-        text = text[:2000]
-        doc_texts.append(f"[{i}] {text[:500]}...")
-    combined = "\n".join(doc_texts)
-    prompt = f"""Question: {question}
-
-Documents:
-{combined}
-
-Which documents contain information useful for answering the question?
-Reply with a list of indices, e.g., [0, 2, 5] or [] if none.
-Only return the list, nothing else."""
-    resp = call_groq(prompt, max_tokens=100)
-    try:
-        numbers = re.findall(r'\d+', resp)
-        indices = [int(n) for n in numbers if int(n) < len(docs)]
-        return indices
-    except:
-        # Fallback: return top 3
-        return list(range(min(3, len(docs))))
+def generate_greeting() -> str:
+    import random
+    return random.choice([
+        "Hello! How can I assist you today?",
+        "Hi there! What can I help you with?",
+        "Hey! How may I help you?",
+        "Good day! How can I be of service?"
+    ])
 
 def generate_from_context(question: str, context: str) -> str:
     prompt = f"""You are a helpful assistant. Answer the user's question based solely on the provided context.
@@ -68,51 +46,25 @@ Question: {question}
 Answer:"""
     return call_groq(prompt, max_tokens=500, temperature=0.3)
 
-def check_support_and_usefulness(question: str, answer: str, context: str) -> tuple:
-    prompt = f"""You are a strict evaluator.
-Question: {question}
-Answer: {answer}
-Context: {context}
+def generate_from_chunks(question: str, chunks_text: str) -> str:
+    """
+    Used by self-learning: given a set of chunks (from all documents),
+    decide if any can answer the question.
+    If yes, answer; else return exactly "NOT_RELATED".
+    """
+    prompt = f"""You are a content analyst.
+The user asked: "{question}"
 
-1. Is the answer fully supported by the context? (All facts in answer appear in context)
-   Reply with 'full', 'partial', or 'no' (one word).
+We have the following text snippets from our documents:
 
-2. Does the answer actually answer the user's question?
-   Reply with 'yes' or 'no'.
+{chunks_text}
 
-Format your reply exactly as two lines:
-support: <word>
-useful: <word>
+Does any of these snippets contain information that can answer the question?
+- If yes, provide a concise answer based only on the snippets.
+- If no, reply with exactly "NOT_RELATED".
 
-Example:
-support: full
-useful: yes
-"""
-    resp = call_groq(prompt, max_tokens=30)
-    support = 'no'
-    useful = False
-    for line in resp.splitlines():
-        if line.startswith('support:'):
-            val = line.split(':',1)[1].strip().lower()
-            if val in ('full', 'partial', 'no'):
-                support = val
-        elif line.startswith('useful:'):
-            val = line.split(':',1)[1].strip().lower()
-            useful = val == 'yes'
-    return support, useful
-
-def revise_answer(question: str, answer: str, context: str) -> str:
-    prompt = f"""Rewrite the answer to remove any facts not present in the context.
-Question: {question}
-Original answer: {answer}
-Context: {context}
-New answer (only from context):"""
-    return call_groq(prompt, max_tokens=500, temperature=0.2)
-
-def rewrite_query(question: str, previous_query: str, last_answer: str) -> str:
-    prompt = f"""Original question: {question}
-Previous retrieval query: {previous_query}
-The previous answer was not useful.
-Write a new, short retrieval query with key terms to find better documents.
-Return only the query, nothing else."""
-    return call_groq(prompt, max_tokens=50)
+Answer:"""
+    resp = call_groq(prompt, max_tokens=300, temperature=0.2)
+    if "NOT_RELATED" in resp:
+        return None
+    return resp.strip()

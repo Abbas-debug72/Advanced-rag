@@ -32,3 +32,19 @@ documents_metadata = get_document_metadata()
 
 def get_all_filenames() -> List[str]:
     return list(documents_metadata.keys())
+
+def upsert_qa_pair(question: str, answer: str):
+    """Store a new Q&A pair in Pinecone for future retrieval."""
+    import time, uuid
+    qa_text = f"Question: {question}\nAnswer: {answer}"
+    emb = get_embedding(qa_text)
+    doc_id = f"qa_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    pinecone_index.upsert(
+        vectors=[(doc_id, emb, {
+            "source_file": "self_generated",
+            "type": "qa",
+            "text": qa_text,
+            "question": question,
+            "answer": answer
+        })]
+    )
