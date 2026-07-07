@@ -1,10 +1,7 @@
 from functools import wraps
 from flask import request, jsonify
-import jwt
 from db import supabase, supabase_admin
-from config import get_settings
-
-settings = get_settings()
+import uuid
 
 def get_token_from_request():
     auth_header = request.headers.get('Authorization')
@@ -23,6 +20,7 @@ def require_auth(f):
         if request.method == "OPTIONS":
             return jsonify({"status": "ok"}), 200
 
+        # Try JWT
         token = get_token_from_request()
         if token:
             try:
@@ -30,23 +28,27 @@ def require_auth(f):
                 if user and user.user:
                     request.user = user.user
                     return f(*args, **kwargs)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"JWT error: {e}")
 
+        # Try API key
         api_key = get_api_key_from_request()
-        if api_key:
-            try:
-                result = supabase_admin.table('users').select('*').eq('api_key', api_key).execute()
-                if result.data:
-                    user_data = result.data[0]
-                    # Create a simple user object
-                    request.user = type('User', (), {
-                        'id': user_data['id'],
-                        'email': user_data['email'],
-                    })()
-                    return f(*args, **kwargs)
-            except Exception:
-                pass
+        if not api_key:
+            return jsonify({"error": "API key missing in request headers"}), 401
 
-        return jsonify({"error": "Missing or invalid authentication"}), 401
+        try:
+            result = supabase_admin.table('users').select('*').eq('api_key', api_key).execute()
+            if result.data and len(result.data) > 0:
+                user_data = result.data[0]
+                request.user = type('User', (), {
+                    'id': user_data['id'],
+                    'email': user_data['email'],
+                })()
+                return f(*args, **kwargs)
+            else:
+                return jsonify({"error": "API key not found in database"}), 401
+        except Exception as e:
+            print(f"API key lookup error: {e}")
+            return jsonify({"error": "Internal server error during key validation"}), 500
+
     return decorated
