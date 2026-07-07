@@ -2,16 +2,18 @@ from groq import Groq
 from config import get_settings
 from typing import List, Dict, Optional
 import random
+import re
 
 settings = get_settings()
 groq_client = Groq(api_key=settings.GROQ_API_KEY)
 MODEL = settings.GROQ_MODEL
 
-# --- Simple greetings (exact matches) ---
+# --- Expanded greetings ---
 GREETINGS = {
     "hi", "hello", "hey", "how are you", "what's up",
     "good morning", "good evening", "good night", "howdy",
-    "how are you doing", "what's going on", "yo"
+    "how are you doing", "what's going on", "yo",
+    "hii", "hiii", "heyy", "heya", "hiya"
 }
 
 def call_groq(prompt: str, max_tokens: int = 500, temperature: float = 0.3) -> str:
@@ -28,8 +30,13 @@ def call_groq(prompt: str, max_tokens: int = 500, temperature: float = 0.3) -> s
         return ""
 
 def is_greeting(question: str) -> bool:
-    q = question.lower().strip()
-    return q in GREETINGS or q.rstrip('?!.') in GREETINGS
+    """Check if the question is a simple greeting, ignoring punctuation."""
+    q = re.sub(r'[^a-zA-Z\s]', '', question).strip().lower()
+    # Also check if the question is very short and contains only a greeting word
+    words = q.split()
+    if len(words) <= 2 and any(w in GREETINGS for w in words):
+        return True
+    return q in GREETINGS
 
 def generate_greeting() -> str:
     return random.choice([
@@ -43,7 +50,7 @@ def generate_from_context(question: str, context: str) -> str:
     if not context:
         return "I don't have an answer related to this question."
     prompt = f"""You are a helpful assistant. Answer the user's question based solely on the provided context.
-If the context does not contain enough information, say "I don't have an answer related to this question."
+If the context does not contain enough information, say "I don't have enough information in the provided documents."
 
 Context:
 {context}
@@ -76,3 +83,14 @@ Answer:"""
     if not resp or "NOT_RELATED" in resp:
         return None
     return resp.strip()
+
+def is_insufficient_answer(answer: str) -> bool:
+    """Check if the answer indicates insufficient information."""
+    lower = answer.lower()
+    phrases = [
+        "i don't have enough information",
+        "i don't have an answer",
+        "no information",
+        "not enough information"
+    ]
+    return any(p in lower for p in phrases)

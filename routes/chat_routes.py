@@ -5,13 +5,12 @@ from memory import ConversationMemory
 from db import supabase_admin
 from vector_store import get_all_filenames
 import re
-import traceback
 import logging
+import traceback
 
 logger = logging.getLogger(__name__)
 chat_bp = Blueprint('chat', __name__, url_prefix='/api')
 
-# In-memory focus per session
 session_focus = {}
 
 def detect_focus_command(question):
@@ -34,7 +33,6 @@ def chat():
         if not question:
             return jsonify({"answer": "Please provide a question."}), 400
 
-        # Handle focus commands
         focus_cmd = detect_focus_command(question)
         if focus_cmd == "CLEAR":
             session_focus.pop(session_id, None)
@@ -51,19 +49,21 @@ def chat():
             memory.add_message(session_id, "assistant", msg)
             return jsonify({"answer": msg, "sources": []})
 
-        # Run the RAG engine
         focus_doc = session_focus.get(session_id)
         engine = SelfRAGEngine(request.user.id)
         result = engine.run(question, session_id, focus_doc)
 
-        # Save conversation (only if answer is not a greeting or "no answer")
-        if result.retrieval_used or result.learned:
+        # Save conversation only if answer is not a failure message
+        if result.retrieval_used and result.answer != "I don't have an answer related to this question.":
             engine.memory.add_message(session_id, "user", question)
             engine.memory.add_message(session_id, "assistant", result.answer)
 
+        # Only send sources if we actually have a real answer
+        sources = result.sources if result.answer != "I don't have an answer related to this question." else []
+
         return jsonify({
             "answer": result.answer,
-            "sources": result.sources,
+            "sources": sources,
             "metadata": {
                 "retrieval_used": result.retrieval_used,
                 "learned": result.learned
@@ -73,4 +73,3 @@ def chat():
     except Exception as e:
         logger.error(f"Chat endpoint error: {e}\n{traceback.format_exc()}")
         return jsonify({"answer": "I don't have an answer related to this question.", "sources": []}), 200
-        # Return 200 to avoid widget crash, but with a generic message

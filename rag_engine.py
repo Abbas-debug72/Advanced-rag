@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from vector_store import search_pinecone, get_all_filenames, upsert_qa_pair
 from llm import (
     is_greeting, generate_greeting, generate_from_context,
-    generate_from_chunks
+    generate_from_chunks, is_insufficient_answer
 )
 from memory import ConversationMemory
 from db import supabase_admin
@@ -67,22 +67,28 @@ class SelfRAGEngine:
 
                 if context:
                     answer = generate_from_context(question, context)
-                    sources = [{'document': d['metadata'].get('source_file', 'unknown'), 'score': d.get('score', 0)}
-                               for d in docs[:5]]
-                    logger.info(f"Generated answer from context: {answer[:100]}...")
-                    return RAGResult(answer, sources, True)
+                    # If answer is insufficient, try self-learning
+                    if is_insufficient_answer(answer):
+                        logger.info("Answer was insufficient, attempting self-learning...")
+                        learned_answer = self._self_learn(question)
+                        if learned_answer:
+                            upsert_qa_pair(question, learned_answer)
+                            return RAGResult(learned_answer, [], True, learned=True)
+                        else:
+                            return RAGResult("I don't have an answer related to this question.", [], True)
+                    else:
+                        sources = [{'document': d['metadata'].get('source_file', 'unknown'), 'score': d.get('score', 0)}
+                                   for d in docs[:5]]
+                        return RAGResult(answer, sources, True)
 
-            # 5. No answer found – attempt self‑learning
-            logger.info("No context found, attempting self-learning...")
+            # 5. No docs – attempt self‑learning
+            logger.info("No docs found, attempting self-learning...")
             learned_answer = self._self_learn(question)
             if learned_answer:
-                logger.info(f"Self-learning generated answer: {learned_answer[:100]}...")
-                # Store the new QA pair for future use
                 upsert_qa_pair(question, learned_answer)
                 return RAGResult(learned_answer, [], True, learned=True)
 
             # 6. Final fallback – no answer
-            logger.info("No answer found.")
             return RAGResult("I don't have an answer related to this question.", [], True)
 
         except Exception as e:
@@ -96,7 +102,6 @@ class SelfRAGEngine:
             if not docs:
                 return None
 
-            # Build a text with snippets (shortened to save tokens)
             snippets = []
             for i, doc in enumerate(docs[:8]):
                 meta = doc.get('metadata', {})
