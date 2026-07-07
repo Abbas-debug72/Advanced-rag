@@ -8,6 +8,7 @@ from llm import (
 from memory import ConversationMemory
 from db import supabase_admin
 import logging
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class SelfRAGEngine:
 
     def run(self, question: str, session_id: str, focus_doc: Optional[str] = None) -> RAGResult:
         try:
+            logger.info(f"Processing question: {question}")
             # 1. Check greetings
             if is_greeting(question):
                 return RAGResult(generate_greeting(), [], False)
@@ -51,6 +53,7 @@ class SelfRAGEngine:
             # 3. Retrieve from Pinecone
             filter_ = {"source_file": focus_doc} if focus_doc else {}
             docs = search_pinecone(question, top_k=10, filter_=filter_)
+            logger.info(f"Retrieved {len(docs)} docs")
 
             # 4. If we have docs, build context and generate answer
             if docs:
@@ -66,20 +69,24 @@ class SelfRAGEngine:
                     answer = generate_from_context(question, context)
                     sources = [{'document': d['metadata'].get('source_file', 'unknown'), 'score': d.get('score', 0)}
                                for d in docs[:5]]
+                    logger.info(f"Generated answer from context: {answer[:100]}...")
                     return RAGResult(answer, sources, True)
 
             # 5. No answer found – attempt self‑learning
+            logger.info("No context found, attempting self-learning...")
             learned_answer = self._self_learn(question)
             if learned_answer:
+                logger.info(f"Self-learning generated answer: {learned_answer[:100]}...")
                 # Store the new QA pair for future use
                 upsert_qa_pair(question, learned_answer)
                 return RAGResult(learned_answer, [], True, learned=True)
 
             # 6. Final fallback – no answer
+            logger.info("No answer found.")
             return RAGResult("I don't have an answer related to this question.", [], True)
 
         except Exception as e:
-            logger.error(f"RAG engine error: {e}", exc_info=True)
+            logger.error(f"RAG engine error: {e}\n{traceback.format_exc()}")
             return RAGResult("I don't have an answer related to this question.", [], True)
 
     def _self_learn(self, question: str) -> Optional[str]:
@@ -104,5 +111,5 @@ class SelfRAGEngine:
             combined = "\n\n".join(snippets)
             return generate_from_chunks(question, combined)
         except Exception as e:
-            logger.error(f"Self-learning error: {e}", exc_info=True)
+            logger.error(f"Self-learning error: {e}\n{traceback.format_exc()}")
             return None
