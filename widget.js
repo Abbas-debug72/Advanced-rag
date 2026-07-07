@@ -1,4 +1,4 @@
-// widget.js – Full chat widget with feedback
+// widget.js – Full chat widget with session switcher and delete chat
 (function() {
     'use strict';
 
@@ -188,6 +188,12 @@
                     cursor: pointer;
                 }
                 #chatbot-widget .feedback-correction .submit-correction:hover { background: #5a52d5; }
+                #chatbot-widget .delete-btn {
+                    color: #ff6b6b;
+                }
+                #chatbot-widget .delete-btn:hover {
+                    background: rgba(255,0,0,0.2);
+                }
                 @media (max-width:500px) {
                     #chatbot-widget .chatbot-window { bottom:0; right:0; width:100%; height:100%; max-height:100vh; border-radius:0; }
                     #chatbot-widget .chatbot-button { bottom:16px; right:16px; width:56px; height:56px; font-size:24px; }
@@ -205,8 +211,9 @@
                     </div>
                     <div class="header-actions">
                         <button class="header-btn" id="new-chat-btn" title="New chat">➕</button>
-                        <button class="header-btn" id="chatbot-clear" title="Clear current chat">🗑</button>
-                        <button class="header-btn" id="chatbot-close" title="Close">✕</button>
+                        <button class="header-btn delete-btn" id="delete-chat-btn" title="Delete current chat">🗑</button>
+                        <button class="header-btn" id="chatbot-clear" title="Clear current chat">✕</button>
+                        <button class="header-btn" id="chatbot-close" title="Close">⌄</button>
                     </div>
                 </div>
 
@@ -246,6 +253,7 @@
         document.getElementById('chatbot-toggle').addEventListener('click', toggleChat);
         document.getElementById('chatbot-close').addEventListener('click', closeChat);
         document.getElementById('chatbot-clear').addEventListener('click', clearCurrentChat);
+        document.getElementById('delete-chat-btn').addEventListener('click', deleteCurrentChat);
         document.getElementById('new-chat-btn').addEventListener('click', newChat);
         document.getElementById('chatbot-send').addEventListener('click', sendMessage);
         document.getElementById('chatbot-input').addEventListener('keypress', (e) => {
@@ -265,6 +273,7 @@
             const data = await res.json();
             allSessions = data.sessions || [];
             populateSessionDropdown();
+            // Ensure current session exists in list, otherwise add it
             if (!allSessions.includes(sessionId)) {
                 allSessions.push(sessionId);
             }
@@ -366,7 +375,34 @@
         document.getElementById('chatbot-input').focus();
     }
 
-    // ── Clear current chat ──
+    // ── Delete current chat ──
+    async function deleteCurrentChat() {
+        if (!sessionId) return;
+        if (!confirm(`Delete this chat session?`)) return;
+        try {
+            await fetch(`${CONFIG.apiUrl}/api/conversation/${sessionId}`, {
+                method: 'DELETE',
+                headers: { 'X-API-Key': CONFIG.apiKey }
+            });
+        } catch(e) {
+            console.warn('Delete error:', e);
+        }
+        // Remove from local list
+        const index = allSessions.indexOf(sessionId);
+        if (index > -1) allSessions.splice(index, 1);
+        populateSessionDropdown();
+        if (allSessions.length === 0) {
+            newChat();
+        } else {
+            // Select the first session
+            sessionId = allSessions[0];
+            localStorage.setItem('chatbot_session', sessionId);
+            document.getElementById('session-select').value = sessionId;
+            loadHistory(sessionId);
+        }
+    }
+
+    // ── Clear current chat (keep session) ──
     async function clearCurrentChat() {
         if (!sessionId) return;
         try {
@@ -375,17 +411,8 @@
                 headers: { 'X-API-Key': CONFIG.apiKey }
             });
         } catch(e) {}
-        const index = allSessions.indexOf(sessionId);
-        if (index > -1) allSessions.splice(index, 1);
-        populateSessionDropdown();
-        if (allSessions.length === 0) {
-            newChat();
-        } else {
-            sessionId = allSessions[0];
-            localStorage.setItem('chatbot_session', sessionId);
-            document.getElementById('session-select').value = sessionId;
-            loadHistory(sessionId);
-        }
+        // Reload history (it will show greeting)
+        loadHistory(sessionId);
     }
 
     // ── Feedback submission ──
@@ -549,7 +576,6 @@
 
             hideTyping();
             if (data.answer) {
-                // Use a timestamp or a random ID for messageId (we don't have a DB id)
                 const msgId = Date.now() + '_' + Math.random().toString(36).substr(2, 6);
                 addMessage(data.answer, 'bot', data.sources || [], msgId);
             } else {
