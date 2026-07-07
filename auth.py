@@ -20,7 +20,6 @@ def require_auth(f):
         if request.method == "OPTIONS":
             return jsonify({"status": "ok"}), 200
 
-        # Try JWT
         token = get_token_from_request()
         if token:
             try:
@@ -31,7 +30,6 @@ def require_auth(f):
             except Exception as e:
                 print(f"JWT error: {e}")
 
-        # Try API key
         api_key = get_api_key_from_request()
         if not api_key:
             return jsonify({"error": "API key missing in request headers"}), 401

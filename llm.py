@@ -1,6 +1,7 @@
 from groq import Groq
 from config import get_settings
-from typing import List, Dict
+from typing import List, Dict, Optional
+import random
 
 settings = get_settings()
 groq_client = Groq(api_key=settings.GROQ_API_KEY)
@@ -14,20 +15,23 @@ GREETINGS = {
 }
 
 def call_groq(prompt: str, max_tokens: int = 500, temperature: float = 0.3) -> str:
-    response = groq_client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=temperature,
-        max_tokens=max_tokens
-    )
-    return response.choices[0].message.content.strip()
+    try:
+        response = groq_client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Groq API error: {e}")
+        return ""
 
 def is_greeting(question: str) -> bool:
     q = question.lower().strip()
     return q in GREETINGS or q.rstrip('?!.') in GREETINGS
 
 def generate_greeting() -> str:
-    import random
     return random.choice([
         "Hello! How can I assist you today?",
         "Hi there! What can I help you with?",
@@ -36,6 +40,8 @@ def generate_greeting() -> str:
     ])
 
 def generate_from_context(question: str, context: str) -> str:
+    if not context:
+        return "I don't have an answer related to this question."
     prompt = f"""You are a helpful assistant. Answer the user's question based solely on the provided context.
 If the context does not contain enough information, say "I don't have an answer related to this question."
 
@@ -44,14 +50,16 @@ Context:
 
 Question: {question}
 Answer:"""
-    return call_groq(prompt, max_tokens=500, temperature=0.3)
+    return call_groq(prompt, max_tokens=500, temperature=0.3) or "I don't have an answer related to this question."
 
-def generate_from_chunks(question: str, chunks_text: str) -> str:
+def generate_from_chunks(question: str, chunks_text: str) -> Optional[str]:
     """
     Used by self-learning: given a set of chunks (from all documents),
     decide if any can answer the question.
-    If yes, answer; else return exactly "NOT_RELATED".
+    If yes, answer; else return None.
     """
+    if not chunks_text:
+        return None
     prompt = f"""You are a content analyst.
 The user asked: "{question}"
 
@@ -65,6 +73,6 @@ Does any of these snippets contain information that can answer the question?
 
 Answer:"""
     resp = call_groq(prompt, max_tokens=300, temperature=0.2)
-    if "NOT_RELATED" in resp:
+    if not resp or "NOT_RELATED" in resp:
         return None
     return resp.strip()
